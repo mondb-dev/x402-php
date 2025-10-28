@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace X402\Middleware;
 
 use X402\Encoding\Encoder;
+use X402\Exceptions\ErrorCodes;
 use X402\Exceptions\PaymentRequiredException;
 use X402\Exceptions\ValidationException;
 use X402\Facilitator\FacilitatorClient;
 use X402\Exceptions\FacilitatorException;
 use X402\Types\ExactPaymentPayload;
+use X402\Types\ExactSvmPayload;
 use X402\Types\PaymentPayload;
 use X402\Types\PaymentRequiredResponse;
 use X402\Types\PaymentRequirements;
@@ -23,14 +25,22 @@ class PaymentHandler
     private const HEADER_PAYMENT = 'X-Payment';
     private const HEADER_PAYMENT_RESPONSE = 'X-Payment-Response';
     private const X402_VERSION = 1;
+    
+    // Default timing buffer for different network types
+    // EVM L2s (Base, Optimism, Arbitrum): ~2s blocks = 6s for 3 blocks
+    // Ethereum mainnet: ~12s blocks = 36s for 3 blocks
+    // Solana: ~0.4s slots = 2s for 5 slots
+    private const DEFAULT_BUFFER_SECONDS = 6;
 
     /**
      * @param FacilitatorClient|null $facilitator Optional facilitator client for verification/settlement
      * @param bool $autoSettle Whether to automatically settle payments (default: true)
+     * @param int $validBeforeBufferSeconds Buffer time in seconds to account for block confirmation delays (default: 6)
      */
     public function __construct(
         private readonly ?FacilitatorClient $facilitator = null,
-        private readonly bool $autoSettle = true
+        private readonly bool $autoSettle = true,
+        private readonly int $validBeforeBufferSeconds = self::DEFAULT_BUFFER_SECONDS
     ) {
     }
 
@@ -47,6 +57,7 @@ class PaymentHandler
      * @param int $timeout Maximum timeout in seconds (default: 300)
      * @param string $mimeType Response MIME type (default: "application/json")
      * @param array<string, mixed>|null $extra Extra scheme-specific data
+     * @param string|null $id Optional unique identifier (required by some facilitators like Coinbase)
      * @return PaymentRequirements
      */
     public function createPaymentRequirements(
@@ -59,25 +70,47 @@ class PaymentHandler
         string $scheme = 'exact',
         int $timeout = 300,
         string $mimeType = 'application/json',
-        ?array $extra = null
+        ?array $extra = null,
+        ?string $id = null
     ): PaymentRequirements {
         // Validate inputs
-        if (!Validator::isValidEthereumAddress($payTo)) {
-            throw new ValidationException("Invalid payTo address");
+        if (!Validator::isValidAddress($payTo, $network)) {
+            $addressType = Validator::isSvmNetwork($network) ? 'Solana' : 'Ethereum';
+            throw new ValidationException("Invalid payTo {$addressType} address");
         }
 
-        if (!Validator::isValidEthereumAddress($asset)) {
-            throw new ValidationException("Invalid asset address");
+        if (!Validator::isValidAddress($asset, $network)) {
+            $addressType = Validator::isSvmNetwork($network) ? 'SPL token' : 'ERC20 token';
+            throw new ValidationException("Invalid asset {$addressType} address");
         }
 
         if (!Validator::isValidUintString($amount)) {
             throw new ValidationException("Invalid amount format");
         }
 
+        // For exact scheme on EVM networks, extra must contain name and version
+        if ($scheme === 'exact' && Validator::isEvmNetwork($network)) {
+            if ($extra === null || !isset($extra['name']) || !isset($extra['version'])) {
+                throw new ValidationException(
+                    "For exact scheme on EVM networks, extra must contain 'name' and 'version' fields for EIP-712 signature verification"
+                );
+            }
+        }
+
+        // For exact scheme on SVM networks, extra should contain feePayer
+        if ($scheme === 'exact' && Validator::isSvmNetwork($network)) {
+            if ($extra !== null && isset($extra['feePayer'])) {
+                if (!Validator::isValidSolanaAddress($extra['feePayer'])) {
+                    throw new ValidationException("feePayer in extra must be a valid Solana address");
+                }
+            }
+        }
+
         $sanitizedResource = Validator::sanitizeUrl($resource);
         $sanitizedDescription = Validator::sanitizeString($description);
 
         return new PaymentRequirements(
+            id: $id,
             scheme: $scheme,
             network: $network,
             maxAmountRequired: $amount,
@@ -162,33 +195,52 @@ class PaymentHandler
         }
 
         if ($payload->x402Version !== self::X402_VERSION) {
-            throw new PaymentRequiredException('Unsupported x402 version');
+            throw new PaymentRequiredException(
+                'Unsupported x402 version',
+                ErrorCodes::INVALID_VERSION
+            );
         }
 
         // Basic validation
         if ($payload->scheme !== $requirements->scheme) {
-            throw new PaymentRequiredException("Payment scheme mismatch");
+            throw new PaymentRequiredException(
+                "Payment scheme mismatch",
+                ErrorCodes::INVALID_SCHEME
+            );
         }
 
         if ($payload->network !== $requirements->network) {
-            throw new PaymentRequiredException("Payment network mismatch");
+            throw new PaymentRequiredException(
+                "Payment network mismatch",
+                ErrorCodes::INVALID_NETWORK
+            );
         }
 
         if ($payload->scheme === 'exact') {
-            $this->assertExactAuthorizationMatchesRequirements($payload, $requirements);
+            if (Validator::isSvmNetwork($payload->network)) {
+                $this->assertExactSvmAuthorizationMatchesRequirements($payload, $requirements);
+            } else {
+                $this->assertExactEvmAuthorizationMatchesRequirements($payload, $requirements);
+            }
         }
 
         // Use facilitator for verification if available
         if ($this->facilitator !== null) {
             try {
-                $verifyResponse = $this->facilitator->verify($payload, $requirements);
+                // Pass the original base64 encoded header to facilitator
+                $verifyResponse = $this->facilitator->verify($paymentHeader, $requirements);
             } catch (FacilitatorException $e) {
-                throw new PaymentRequiredException('Payment verification failed: ' . $e->getMessage(), 0, $e);
+                throw new PaymentRequiredException(
+                    'Payment verification failed: ' . $e->getMessage(),
+                    ErrorCodes::FACILITATOR_ERROR,
+                    $e
+                );
             }
 
             if (!$verifyResponse->isValid) {
                 throw new PaymentRequiredException(
-                    "Payment verification failed: " . ($verifyResponse->invalidReason ?? 'Unknown reason')
+                    "Payment verification failed: " . ($verifyResponse->invalidReason ?? 'Unknown reason'),
+                    ErrorCodes::FACILITATOR_VERIFICATION_FAILED
                 );
             }
         }
@@ -210,12 +262,11 @@ class PaymentHandler
             throw new ValidationException("Facilitator required for payment settlement");
         }
 
-        if (is_string($paymentPayload)) {
-            $paymentPayload = Encoder::decodePaymentHeader($paymentPayload);
-        }
+        // Keep the original header string for facilitator
+        $paymentHeader = is_string($paymentPayload) ? $paymentPayload : Encoder::encodePaymentHeader($paymentPayload);
 
         try {
-            $settleResponse = $this->facilitator->settle($paymentPayload, $requirements);
+            $settleResponse = $this->facilitator->settle($paymentHeader, $requirements);
         } catch (FacilitatorException $e) {
             throw new ValidationException('Payment settlement failed: ' . $e->getMessage(), previous: $e);
         }
@@ -293,24 +344,121 @@ class PaymentHandler
     }
 
     /**
-     * Ensure exact authorization matches requirements.
+     * Ensure exact authorization matches requirements for EVM.
      */
-    private function assertExactAuthorizationMatchesRequirements(
+    private function assertExactEvmAuthorizationMatchesRequirements(
         PaymentPayload $payload,
         PaymentRequirements $requirements
     ): void {
         if (!$payload->payload instanceof ExactPaymentPayload) {
-            throw new PaymentRequiredException('Unsupported exact payment payload');
+            throw new PaymentRequiredException('Unsupported exact EVM payment payload');
         }
 
         $authorization = $payload->payload->authorization;
 
-        if (strcasecmp($authorization->to, $requirements->payTo) !== 0) {
-            throw new PaymentRequiredException('Payment recipient mismatch');
+        // Check recipient address
+        if (strtolower($authorization->to) !== strtolower($requirements->payTo)) {
+            throw new PaymentRequiredException(
+                'Payment recipient mismatch',
+                ErrorCodes::INVALID_EVM_RECIPIENT
+            );
         }
 
+        // Check amount
         if ($this->compareUintStrings($authorization->value, $requirements->maxAmountRequired) !== 0) {
-            throw new PaymentRequiredException('Payment amount mismatch');
+            throw new PaymentRequiredException(
+                'Payment amount mismatch',
+                ErrorCodes::INVALID_EVM_VALUE
+            );
+        }
+
+        // Validate EIP-712 domain parameters in extra field
+        if (!isset($requirements->extra['name']) || !is_string($requirements->extra['name'])) {
+            throw new PaymentRequiredException(
+                'EIP-712 domain name required in extra field',
+                ErrorCodes::INVALID_EVM_SIGNATURE
+            );
+        }
+
+        if (!isset($requirements->extra['version']) || !is_string($requirements->extra['version'])) {
+            throw new PaymentRequiredException(
+                'EIP-712 domain version required in extra field',
+                ErrorCodes::INVALID_EVM_SIGNATURE
+            );
+        }
+
+        // Check timestamp validity
+        $now = time();
+
+        // Verify authorization is not yet valid (validAfter is in the past)
+        $validAfter = (int)$authorization->validAfter;
+        if ($validAfter > $now) {
+            throw new PaymentRequiredException(
+                'Payment authorization not yet valid',
+                ErrorCodes::INVALID_EVM_VALID_AFTER
+            );
+        }
+
+        // Verify authorization is not expired (validBefore is in the future, with configurable buffer for block confirmations)
+        $validBefore = (int)$authorization->validBefore;
+        if ($validBefore < ($now + $this->validBeforeBufferSeconds)) {
+            throw new PaymentRequiredException(
+                'Payment authorization expired or expiring soon',
+                ErrorCodes::INVALID_EVM_VALID_BEFORE
+            );
+        }
+
+        // NOTE: Cryptographic signature verification (ECDSA recovery and validation)
+        // is delegated to the facilitator. Local signature verification requires
+        // additional dependencies for EIP-712 typed data hashing and secp256k1 recovery.
+        // Ensure a facilitator is configured for production use to verify signatures.
+    }
+
+    /**
+     * Ensure exact transaction matches requirements for Solana (SVM).
+     */
+    private function assertExactSvmAuthorizationMatchesRequirements(
+        PaymentPayload $payload,
+        PaymentRequirements $requirements
+    ): void {
+        if (!$payload->payload instanceof ExactSvmPayload) {
+            throw new PaymentRequiredException('Unsupported exact SVM payment payload');
+        }
+
+        $transaction = $payload->payload->transaction;
+
+        // Basic validation - transaction should be base64 encoded
+        if (empty($transaction)) {
+            throw new PaymentRequiredException(
+                'Solana transaction is empty',
+                ErrorCodes::INVALID_SVM_TRANSACTION
+            );
+        }
+
+        // Decode to check it's valid base64
+        $decoded = base64_decode($transaction, true);
+        if ($decoded === false) {
+            throw new PaymentRequiredException(
+                'Invalid base64-encoded Solana transaction',
+                ErrorCodes::INVALID_SVM_TRANSACTION
+            );
+        }
+
+        // NOTE: Full Solana transaction parsing and validation is delegated to the facilitator.
+        // Local validation would require parsing the serialized transaction to verify:
+        // - SPL Token Transfer instruction is present
+        // - Recipient ATA (Associated Token Account) matches payTo
+        // - Transfer amount matches maxAmountRequired
+        // - Token mint matches asset address
+        // - Transaction signatures are valid
+        // 
+        // IMPORTANT: A facilitator is REQUIRED for Solana payments in production
+        // to ensure proper transaction validation and signature verification.
+        if ($this->facilitator === null) {
+            throw new PaymentRequiredException(
+                'Facilitator required for Solana transaction verification',
+                ErrorCodes::FACILITATOR_ERROR
+            );
         }
     }
 

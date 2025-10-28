@@ -10,6 +10,7 @@ use X402\Exceptions\PaymentRequiredException;
 use X402\Middleware\PaymentHandler;
 use X402\Types\EIP3009Authorization;
 use X402\Types\ExactPaymentPayload;
+use X402\Types\ExactSvmPayload;
 use X402\Types\PaymentPayload;
 use X402\Types\PaymentRequirements;
 
@@ -26,7 +27,11 @@ class PaymentHandlerTest extends TestCase
             mimeType: 'application/json',
             payTo: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
             maxTimeoutSeconds: 60,
-            asset: '0x036CbD53842c5426634e7929541eC2318f3dCF7e'
+            asset: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+            extra: [
+                'name' => 'TestDomain',
+                'version' => '1'
+            ]
         );
     }
 
@@ -64,7 +69,8 @@ class PaymentHandlerTest extends TestCase
         $this->expectException(PaymentRequiredException::class);
         $this->expectExceptionMessage('Unsupported x402 version');
 
-        $handler->verifyPayment($header, $requirements);
+        $result = $handler->verifyPayment($header, $requirements);
+        $this->assertSame('invalid_version', $result->invalidReason);
     }
 
     public function testVerifyPaymentFailsWhenRecipientDiffers(): void
@@ -106,5 +112,126 @@ class PaymentHandlerTest extends TestCase
         ]);
 
         $this->assertSame($expected, $header);
+    }
+
+    // ========== Solana (SVM) Tests ==========
+
+    private function createSolanaRequirements(): PaymentRequirements
+    {
+        return new PaymentRequirements(
+            scheme: 'exact',
+            network: 'solana-devnet',
+            maxAmountRequired: '1000000',
+            resource: 'https://api.example.com/solana-data',
+            description: 'Solana Premium data',
+            mimeType: 'application/json',
+            payTo: '9B5XszUGdMaxCZ7uSQhPzdks5ZQSmWxrmzCSvtJ6Ns6g',
+            maxTimeoutSeconds: 60,
+            asset: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' // USDC on Solana
+        );
+    }
+
+    private function createSolanaPayload(array $overrides = []): PaymentPayload
+    {
+        // Mock base64-encoded Solana transaction
+        $mockTransaction = base64_encode('mock-solana-transaction-bytes');
+        
+        $payload = new ExactSvmPayload(
+            transaction: $overrides['transaction'] ?? $mockTransaction
+        );
+
+        return new PaymentPayload(
+            x402Version: $overrides['x402Version'] ?? 1,
+            scheme: 'exact',
+            network: 'solana-devnet',
+            payload: $payload
+        );
+    }
+
+    public function testVerifyPaymentFailsForEmptySolanaTransaction(): void
+    {
+        $handler = new PaymentHandler();
+        $requirements = $this->createSolanaRequirements();
+        $payload = $this->createSolanaPayload(['transaction' => '']);
+        $header = Encoder::encodePaymentHeader($payload);
+
+        $this->expectException(PaymentRequiredException::class);
+        $this->expectExceptionMessage('Solana transaction is empty');
+
+        $handler->verifyPayment($header, $requirements);
+    }
+
+    public function testVerifyPaymentFailsForInvalidBase64SolanaTransaction(): void
+    {
+        $handler = new PaymentHandler();
+        $requirements = $this->createSolanaRequirements();
+        $payload = $this->createSolanaPayload(['transaction' => 'not-valid-base64!!!']);
+        $header = Encoder::encodePaymentHeader($payload);
+
+        $this->expectException(PaymentRequiredException::class);
+        $this->expectExceptionMessage('Invalid base64-encoded Solana transaction');
+
+        $handler->verifyPayment($header, $requirements);
+    }
+
+    public function testVerifyPaymentFailsForSolanaWithoutFacilitator(): void
+    {
+        $handler = new PaymentHandler();
+        $requirements = $this->createSolanaRequirements();
+        $payload = $this->createSolanaPayload();
+        $header = Encoder::encodePaymentHeader($payload);
+
+        $this->expectException(PaymentRequiredException::class);
+        $this->expectExceptionMessage('Facilitator required for Solana transaction verification');
+
+        $handler->verifyPayment($header, $requirements);
+    }
+
+    public function testVerifyPaymentFailsForEVMWithoutEIP712DomainName(): void
+    {
+        $handler = new PaymentHandler();
+        $requirements = new PaymentRequirements(
+            scheme: 'exact',
+            network: 'base-sepolia',
+            maxAmountRequired: '10000',
+            resource: 'https://api.example.com/data',
+            description: 'Premium data',
+            mimeType: 'application/json',
+            payTo: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+            maxTimeoutSeconds: 60,
+            asset: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+            extra: ['version' => '1'] // missing 'name'
+        );
+        $payload = $this->createPayload();
+        $header = Encoder::encodePaymentHeader($payload);
+
+        $this->expectException(PaymentRequiredException::class);
+        $this->expectExceptionMessage('EIP-712 domain name required');
+
+        $handler->verifyPayment($header, $requirements);
+    }
+
+    public function testVerifyPaymentFailsForEVMWithoutEIP712DomainVersion(): void
+    {
+        $handler = new PaymentHandler();
+        $requirements = new PaymentRequirements(
+            scheme: 'exact',
+            network: 'base-sepolia',
+            maxAmountRequired: '10000',
+            resource: 'https://api.example.com/data',
+            description: 'Premium data',
+            mimeType: 'application/json',
+            payTo: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+            maxTimeoutSeconds: 60,
+            asset: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+            extra: ['name' => 'TestDomain'] // missing 'version'
+        );
+        $payload = $this->createPayload();
+        $header = Encoder::encodePaymentHeader($payload);
+
+        $this->expectException(PaymentRequiredException::class);
+        $this->expectExceptionMessage('EIP-712 domain version required');
+
+        $handler->verifyPayment($header, $requirements);
     }
 }

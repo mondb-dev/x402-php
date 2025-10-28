@@ -24,6 +24,32 @@ class PaymentRequiredResponse implements JsonSerializable
     }
 
     /**
+     * Get the HTTP headers required for a 402 Payment Required response.
+     * 
+     * Per x402 protocol specification, 402 responses must include:
+     * - WWW-Authenticate: X-Payment
+     * - Content-Type: application/json
+     * - X-Payment-Accept: (comma-separated list of accepted schemes)
+     *
+     * @return array<string, string>
+     */
+    public function getHeaders(): array
+    {
+        $schemes = [];
+        foreach ($this->accepts as $requirement) {
+            if (!in_array($requirement->scheme, $schemes, true)) {
+                $schemes[] = $requirement->scheme;
+            }
+        }
+
+        return [
+            'WWW-Authenticate' => 'X-Payment',
+            'Content-Type' => 'application/json',
+            'X-Payment-Accept' => implode(', ', $schemes),
+        ];
+    }
+
+    /**
      * Create from array data.
      *
      * @param array<string, mixed> $data

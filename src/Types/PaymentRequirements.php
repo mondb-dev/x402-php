@@ -12,6 +12,7 @@ use JsonSerializable;
 class PaymentRequirements implements JsonSerializable
 {
     /**
+     * @param string|null $id Optional unique identifier for this payment requirement (required by some facilitators)
      * @param string $scheme Scheme of the payment protocol to use (e.g., "exact")
      * @param string $network Network of the blockchain to send payment on
      * @param string $maxAmountRequired Maximum amount required to pay for the resource in atomic units
@@ -25,15 +26,16 @@ class PaymentRequirements implements JsonSerializable
      * @param array<string, mixed>|null $extra Extra information about the payment details specific to the scheme
      */
     public function __construct(
-        public readonly string $scheme,
-        public readonly string $network,
-        public readonly string $maxAmountRequired,
-        public readonly string $resource,
-        public readonly string $description,
-        public readonly string $mimeType,
-        public readonly string $payTo,
-        public readonly int $maxTimeoutSeconds,
-        public readonly string $asset,
+        public readonly ?string $id = null,
+        public readonly string $scheme = '',
+        public readonly string $network = '',
+        public readonly string $maxAmountRequired = '',
+        public readonly string $resource = '',
+        public readonly string $description = '',
+        public readonly string $mimeType = '',
+        public readonly string $payTo = '',
+        public readonly int $maxTimeoutSeconds = 0,
+        public readonly string $asset = '',
         public readonly ?array $outputSchema = null,
         public readonly ?array $extra = null
     ) {
@@ -48,6 +50,7 @@ class PaymentRequirements implements JsonSerializable
     public static function fromArray(array $data): self
     {
         return new self(
+            id: $data['id'] ?? null,
             scheme: $data['scheme'] ?? '',
             network: $data['network'] ?? '',
             maxAmountRequired: $data['maxAmountRequired'] ?? $data['max_amount_required'] ?? '',
@@ -80,6 +83,10 @@ class PaymentRequirements implements JsonSerializable
             'maxTimeoutSeconds' => $this->maxTimeoutSeconds,
             'asset' => $this->asset,
         ];
+
+        if ($this->id !== null) {
+            $result['id'] = $this->id;
+        }
 
         if ($this->outputSchema !== null) {
             $result['outputSchema'] = $this->outputSchema;

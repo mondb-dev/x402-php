@@ -36,16 +36,35 @@ class PaymentPayload implements JsonSerializable
         $payload = $data['payload'] ?? [];
         
         // Parse scheme-specific payload
-        if (($data['scheme'] ?? '') === 'exact' && is_array($payload)) {
-            $payload = ExactPaymentPayload::fromArray($payload);
+        $scheme = $data['scheme'] ?? '';
+        $network = $data['network'] ?? '';
+        
+        if ($scheme === 'exact') {
+            // Determine if EVM or SVM based on network
+            if (self::isSvmNetwork($network) && is_array($payload)) {
+                $payload = ExactSvmPayload::fromArray($payload);
+            } elseif (is_array($payload)) {
+                $payload = ExactPaymentPayload::fromArray($payload);
+            }
         }
 
         return new self(
             x402Version: (int)($data['x402Version'] ?? $data['x402_version'] ?? 1),
-            scheme: $data['scheme'] ?? '',
-            network: $data['network'] ?? '',
+            scheme: $scheme,
+            network: $network,
             payload: $payload
         );
+    }
+
+    /**
+     * Check if a network is SVM (Solana).
+     *
+     * @param string $network
+     * @return bool
+     */
+    private static function isSvmNetwork(string $network): bool
+    {
+        return str_starts_with($network, 'solana-');
     }
 
     /**
