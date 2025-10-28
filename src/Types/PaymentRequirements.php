@@ -48,17 +48,17 @@ class PaymentRequirements implements JsonSerializable
     public static function fromArray(array $data): self
     {
         return new self(
-            scheme: $data['scheme'] ?? $data['scheme'] ?? '',
-            network: $data['network'] ?? $data['network'] ?? '',
+            scheme: $data['scheme'] ?? '',
+            network: $data['network'] ?? '',
             maxAmountRequired: $data['maxAmountRequired'] ?? $data['max_amount_required'] ?? '',
-            resource: $data['resource'] ?? $data['resource'] ?? '',
-            description: $data['description'] ?? $data['description'] ?? '',
+            resource: $data['resource'] ?? '',
+            description: $data['description'] ?? '',
             mimeType: $data['mimeType'] ?? $data['mime_type'] ?? '',
             payTo: $data['payTo'] ?? $data['pay_to'] ?? '',
             maxTimeoutSeconds: (int)($data['maxTimeoutSeconds'] ?? $data['max_timeout_seconds'] ?? 0),
-            asset: $data['asset'] ?? $data['asset'] ?? '',
+            asset: $data['asset'] ?? '',
             outputSchema: $data['outputSchema'] ?? $data['output_schema'] ?? null,
-            extra: $data['extra'] ?? $data['extra'] ?? null
+            extra: $data['extra'] ?? null
         );
     }
 

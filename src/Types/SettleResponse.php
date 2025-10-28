@@ -11,18 +11,11 @@ use JsonSerializable;
  */
 class SettleResponse implements JsonSerializable
 {
-    /**
-     * @param bool $success Whether the payment was successful
-     * @param string|null $error Error message from the facilitator server
-     * @param string|null $txHash Transaction hash of the settled payment
-     * @param string|null $networkId Network id of the blockchain the payment was settled on
-     * @param string|null $payer Address of the payer
-     */
     public function __construct(
         public readonly bool $success,
-        public readonly ?string $error = null,
-        public readonly ?string $txHash = null,
-        public readonly ?string $networkId = null,
+        public readonly ?string $errorReason = null,
+        public readonly ?string $transaction = null,
+        public readonly ?string $network = null,
         public readonly ?string $payer = null
     ) {
     }
@@ -37,9 +30,9 @@ class SettleResponse implements JsonSerializable
     {
         return new self(
             success: (bool)($data['success'] ?? false),
-            error: $data['error'] ?? $data['errorReason'] ?? $data['error_reason'] ?? null,
-            txHash: $data['txHash'] ?? $data['transaction'] ?? $data['tx_hash'] ?? null,
-            networkId: $data['networkId'] ?? $data['network'] ?? $data['network_id'] ?? null,
+            errorReason: $data['errorReason'] ?? $data['error_reason'] ?? $data['error'] ?? null,
+            transaction: $data['transaction'] ?? $data['txHash'] ?? $data['tx_hash'] ?? null,
+            network: $data['network'] ?? $data['networkId'] ?? $data['network_id'] ?? null,
             payer: $data['payer'] ?? null
         );
     }
@@ -51,27 +44,16 @@ class SettleResponse implements JsonSerializable
      */
     public function toArray(): array
     {
-        $result = [
-            'success' => $this->success,
-        ];
-
-        if ($this->error !== null) {
-            $result['error'] = $this->error;
-        }
-
-        if ($this->txHash !== null) {
-            $result['txHash'] = $this->txHash;
-        }
-
-        if ($this->networkId !== null) {
-            $result['networkId'] = $this->networkId;
-        }
-
-        if ($this->payer !== null) {
-            $result['payer'] = $this->payer;
-        }
-
-        return $result;
+        return array_filter(
+            [
+                'success' => $this->success,
+                'errorReason' => $this->errorReason,
+                'transaction' => $this->transaction,
+                'network' => $this->network,
+                'payer' => $this->payer,
+            ],
+            static fn($value) => $value !== null
+        );
     }
 
     /**

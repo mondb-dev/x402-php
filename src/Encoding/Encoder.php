@@ -6,6 +6,7 @@ namespace X402\Encoding;
 
 use X402\Exceptions\ValidationException;
 use X402\Types\PaymentPayload;
+use X402\Validation\Validator;
 
 /**
  * Encoder/decoder for x402 protocol data.
@@ -52,6 +53,8 @@ class Encoder
         if (!is_array($data)) {
             throw new ValidationException("Payment header must decode to an array");
         }
+
+        Validator::validatePaymentPayload($data);
 
         return PaymentPayload::fromArray($data);
     }

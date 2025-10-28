@@ -8,6 +8,7 @@ use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use X402\Encoding\Encoder;
 use X402\Exceptions\FacilitatorException;
+use X402\Types\PaymentPayload;
 use X402\Types\PaymentRequirements;
 use X402\Types\SettleResponse;
 use X402\Types\VerifyResponse;
@@ -42,20 +43,17 @@ class FacilitatorClient
     /**
      * Verify a payment with the facilitator.
      *
-     * @param string $paymentHeader Base64 encoded payment payload
+     * @param PaymentPayload $paymentPayload Payment payload as decoded object
      * @param PaymentRequirements $requirements Payment requirements
-     * @param int $x402Version Protocol version (default: 1)
      * @return VerifyResponse
      * @throws FacilitatorException
      */
     public function verify(
-        string $paymentHeader,
-        PaymentRequirements $requirements,
-        int $x402Version = 1
+        PaymentPayload $paymentPayload,
+        PaymentRequirements $requirements
     ): VerifyResponse {
         $payload = [
-            'x402Version' => $x402Version,
-            'paymentHeader' => $paymentHeader,
+            'paymentPayload' => $paymentPayload->toArray(),
             'paymentRequirements' => $requirements->toArray(),
         ];
 
@@ -83,20 +81,17 @@ class FacilitatorClient
     /**
      * Settle a payment with the facilitator.
      *
-     * @param string $paymentHeader Base64 encoded payment payload
+     * @param PaymentPayload $paymentPayload Payment payload as decoded object
      * @param PaymentRequirements $requirements Payment requirements
-     * @param int $x402Version Protocol version (default: 1)
      * @return SettleResponse
      * @throws FacilitatorException
      */
     public function settle(
-        string $paymentHeader,
-        PaymentRequirements $requirements,
-        int $x402Version = 1
+        PaymentPayload $paymentPayload,
+        PaymentRequirements $requirements
     ): SettleResponse {
         $payload = [
-            'x402Version' => $x402Version,
-            'paymentHeader' => $paymentHeader,
+            'paymentPayload' => $paymentPayload->toArray(),
             'paymentRequirements' => $requirements->toArray(),
         ];
 

@@ -8,6 +8,8 @@ use X402\Encoding\Encoder;
 use X402\Exceptions\PaymentRequiredException;
 use X402\Exceptions\ValidationException;
 use X402\Facilitator\FacilitatorClient;
+use X402\Exceptions\FacilitatorException;
+use X402\Types\ExactPaymentPayload;
 use X402\Types\PaymentPayload;
 use X402\Types\PaymentRequiredResponse;
 use X402\Types\PaymentRequirements;
@@ -72,12 +74,15 @@ class PaymentHandler
             throw new ValidationException("Invalid amount format");
         }
 
+        $sanitizedResource = Validator::sanitizeUrl($resource);
+        $sanitizedDescription = Validator::sanitizeString($description);
+
         return new PaymentRequirements(
             scheme: $scheme,
             network: $network,
             maxAmountRequired: $amount,
-            resource: $resource,
-            description: $description,
+            resource: $sanitizedResource,
+            description: $sanitizedDescription,
             mimeType: $mimeType,
             payTo: $payTo,
             maxTimeoutSeconds: $timeout,
@@ -113,10 +118,25 @@ class PaymentHandler
     public function extractPaymentHeader(array $headers): ?string
     {
         // Check both standard and lowercase versions
-        foreach ([self::HEADER_PAYMENT, strtolower(self::HEADER_PAYMENT)] as $key) {
-            if (isset($headers[$key])) {
-                $value = $headers[$key];
-                return is_array($value) ? $value[0] : $value;
+        foreach ($headers as $key => $value) {
+            $normalized = strtolower((string)$key);
+
+            if ($normalized === strtolower(self::HEADER_PAYMENT) || $normalized === 'http_x_payment') {
+                if (is_array($value)) {
+                    if ($value === []) {
+                        continue;
+                    }
+
+                    $first = reset($value);
+
+                    return (string)$first;
+                }
+
+                if ($value === null) {
+                    continue;
+                }
+
+                return (string)$value;
             }
         }
 
@@ -141,6 +161,10 @@ class PaymentHandler
             throw new PaymentRequiredException("Invalid payment header: " . $e->getMessage());
         }
 
+        if ($payload->x402Version !== self::X402_VERSION) {
+            throw new PaymentRequiredException('Unsupported x402 version');
+        }
+
         // Basic validation
         if ($payload->scheme !== $requirements->scheme) {
             throw new PaymentRequiredException("Payment scheme mismatch");
@@ -150,10 +174,18 @@ class PaymentHandler
             throw new PaymentRequiredException("Payment network mismatch");
         }
 
+        if ($payload->scheme === 'exact') {
+            $this->assertExactAuthorizationMatchesRequirements($payload, $requirements);
+        }
+
         // Use facilitator for verification if available
         if ($this->facilitator !== null) {
-            $verifyResponse = $this->facilitator->verify($paymentHeader, $requirements, self::X402_VERSION);
-            
+            try {
+                $verifyResponse = $this->facilitator->verify($payload, $requirements);
+            } catch (FacilitatorException $e) {
+                throw new PaymentRequiredException('Payment verification failed: ' . $e->getMessage(), 0, $e);
+            }
+
             if (!$verifyResponse->isValid) {
                 throw new PaymentRequiredException(
                     "Payment verification failed: " . ($verifyResponse->invalidReason ?? 'Unknown reason')
@@ -167,21 +199,31 @@ class PaymentHandler
     /**
      * Settle payment.
      *
-     * @param string $paymentHeader Base64 encoded payment payload
+     * @param PaymentPayload|string $paymentPayload Payment payload or base64 encoded header
      * @param PaymentRequirements $requirements Payment requirements
      * @return array<string, mixed> Settlement response data
      * @throws ValidationException
      */
-    public function settlePayment(string $paymentHeader, PaymentRequirements $requirements): array
+    public function settlePayment(PaymentPayload|string $paymentPayload, PaymentRequirements $requirements): array
     {
         if ($this->facilitator === null) {
             throw new ValidationException("Facilitator required for payment settlement");
         }
 
-        $settleResponse = $this->facilitator->settle($paymentHeader, $requirements, self::X402_VERSION);
+        if (is_string($paymentPayload)) {
+            $paymentPayload = Encoder::decodePaymentHeader($paymentPayload);
+        }
+
+        try {
+            $settleResponse = $this->facilitator->settle($paymentPayload, $requirements);
+        } catch (FacilitatorException $e) {
+            throw new ValidationException('Payment settlement failed: ' . $e->getMessage(), previous: $e);
+        }
 
         if (!$settleResponse->success) {
-            throw new ValidationException("Payment settlement failed: " . ($settleResponse->error ?? 'Unknown error'));
+            throw new ValidationException(
+                "Payment settlement failed: " . ($settleResponse->errorReason ?? 'Unknown error')
+            );
         }
 
         return $settleResponse->toArray();
@@ -211,7 +253,7 @@ class PaymentHandler
             
             $settlement = null;
             if ($this->autoSettle && $this->facilitator !== null) {
-                $settlement = $this->settlePayment($paymentHeader, $requirements);
+                $settlement = $this->settlePayment($payload, $requirements);
             }
 
             return [
@@ -248,5 +290,48 @@ class PaymentHandler
     public function getPaymentResponseHeaderName(): string
     {
         return self::HEADER_PAYMENT_RESPONSE;
+    }
+
+    /**
+     * Ensure exact authorization matches requirements.
+     */
+    private function assertExactAuthorizationMatchesRequirements(
+        PaymentPayload $payload,
+        PaymentRequirements $requirements
+    ): void {
+        if (!$payload->payload instanceof ExactPaymentPayload) {
+            throw new PaymentRequiredException('Unsupported exact payment payload');
+        }
+
+        $authorization = $payload->payload->authorization;
+
+        if (strcasecmp($authorization->to, $requirements->payTo) !== 0) {
+            throw new PaymentRequiredException('Payment recipient mismatch');
+        }
+
+        if ($this->compareUintStrings($authorization->value, $requirements->maxAmountRequired) !== 0) {
+            throw new PaymentRequiredException('Payment amount mismatch');
+        }
+    }
+
+    /**
+     * Compare two unsigned integer strings.
+     */
+    private function compareUintStrings(string $a, string $b): int
+    {
+        $a = ltrim($a, '0');
+        $b = ltrim($b, '0');
+
+        $a = $a === '' ? '0' : $a;
+        $b = $b === '' ? '0' : $b;
+
+        $lenA = strlen($a);
+        $lenB = strlen($b);
+
+        if ($lenA === $lenB) {
+            return strcmp($a, $b);
+        }
+
+        return $lenA <=> $lenB;
     }
 }

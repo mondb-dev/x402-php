@@ -143,9 +143,9 @@ if ($paymentHeader !== null) {
         $payload = $handler->verifyPayment($paymentHeader, $requirements);
         
         // Manually settle if needed
-        $settlement = $handler->settlePayment($paymentHeader, $requirements);
-        
-        echo "Transaction: " . $settlement['txHash'];
+        $settlement = $handler->settlePayment($payload, $requirements);
+
+        echo "Transaction: " . $settlement['transaction'];
     } catch (PaymentRequiredException $e) {
         echo "Payment verification failed: " . $e->getMessage();
     }
