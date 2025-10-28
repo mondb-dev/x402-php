@@ -52,7 +52,7 @@ if ($result['verified']) {
     echo "Payment verified successfully!\n";
     
     if ($result['settlement'] !== null) {
-        echo "Payment settled. Transaction: " . $result['settlement']['txHash'] . "\n";
+        echo "Payment settled. Transaction: " . $result['settlement']['transaction'] . "\n";
     }
     
     // Serve the protected resource
