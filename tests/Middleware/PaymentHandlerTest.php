@@ -7,6 +7,7 @@ namespace X402\Tests\Middleware;
 use PHPUnit\Framework\TestCase;
 use X402\Encoding\Encoder;
 use X402\Exceptions\PaymentRequiredException;
+use X402\Exceptions\ValidationException;
 use X402\Middleware\PaymentHandler;
 use X402\Types\EIP3009Authorization;
 use X402\Types\ExactPaymentPayload;
@@ -37,17 +38,21 @@ class PaymentHandlerTest extends TestCase
 
     private function createPayload(array $overrides = []): PaymentPayload
     {
+        $now = time();
+        $defaultValidAfter = (string)($now - 60);
+        $defaultValidBefore = (string)($now + 600);
+
         $authorization = new EIP3009Authorization(
             from: $overrides['from'] ?? '0x857b06519E91e3A54538791bDbb0E22373e36b66',
             to: $overrides['to'] ?? '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
             value: $overrides['value'] ?? '10000',
-            validAfter: $overrides['validAfter'] ?? '1740672089',
-            validBefore: $overrides['validBefore'] ?? '1740672154',
+            validAfter: $overrides['validAfter'] ?? $defaultValidAfter,
+            validBefore: $overrides['validBefore'] ?? $defaultValidBefore,
             nonce: $overrides['nonce'] ?? '0xf3746613c2d920b5fdabc0856f2aeb2d4f88ee6037b8cc5d04a71a4462f13480'
         );
 
         $payload = new ExactPaymentPayload(
-            signature: $overrides['signature'] ?? '0x' . str_repeat('a', 128),
+            signature: $overrides['signature'] ?? '0x' . str_repeat('a', 130),
             authorization: $authorization
         );
 
@@ -56,6 +61,41 @@ class PaymentHandlerTest extends TestCase
             scheme: 'exact',
             network: 'base-sepolia',
             payload: $payload
+        );
+    }
+
+    public function testCreatePaymentRequirementsRejectsUnsupportedScheme(): void
+    {
+        $handler = new PaymentHandler();
+
+        $this->expectException(ValidationException::class);
+        $this->expectExceptionMessage('Unsupported payment scheme: subscription');
+
+        $handler->createPaymentRequirements(
+            payTo: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+            amount: '10000',
+            resource: 'https://api.example.com/data',
+            description: 'Premium data',
+            asset: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+            network: 'base-sepolia',
+            scheme: 'subscription'
+        );
+    }
+
+    public function testCreatePaymentRequirementsRejectsUnsupportedNetwork(): void
+    {
+        $handler = new PaymentHandler();
+
+        $this->expectException(ValidationException::class);
+        $this->expectExceptionMessage('Invalid network. Supported networks: ');
+
+        $handler->createPaymentRequirements(
+            payTo: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+            amount: '10000',
+            resource: 'https://api.example.com/data',
+            description: 'Premium data',
+            asset: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+            network: 'unsupported-network'
         );
     }
 
@@ -134,7 +174,7 @@ class PaymentHandlerTest extends TestCase
     private function createSolanaPayload(array $overrides = []): PaymentPayload
     {
         // Mock base64-encoded Solana transaction
-        $mockTransaction = base64_encode('mock-solana-transaction-bytes');
+        $mockTransaction = base64_encode(str_repeat('A', 120));
         
         $payload = new ExactSvmPayload(
             transaction: $overrides['transaction'] ?? $mockTransaction
