@@ -166,6 +166,13 @@ class Validator
             }
         }
 
+        // Validate optional ID field (required by some facilitators)
+        if (isset($data['id'])) {
+            if (!is_string($data['id']) || trim($data['id']) === '') {
+                throw new ValidationException("Payment ID must be a non-empty string");
+            }
+        }
+
         // Validate network
         $network = $data['network'] ?? '';
         if (!self::isValidNetwork($network)) {
@@ -396,5 +403,72 @@ class Validator
             throw new ValidationException("Invalid URL format");
         }
         return $sanitized;
+    }
+
+    /**
+     * Validate nonce is not reused (replay attack prevention).
+     * 
+     * This helper method checks if a nonce has been used before by calling
+     * the provided callback function. The callback should query your 
+     * database/cache to check if the nonce exists.
+     * 
+     * Example usage:
+     * ```php
+     * $isUnique = Validator::isNonceUnique($nonce, function($nonce) use ($redis) {
+     *     return !$redis->exists("nonce:$nonce");
+     * });
+     * ```
+     *
+     * @param string $nonce The nonce to check (should be a hex string)
+     * @param callable $checkCallback Callback that returns true if nonce is unique, false if already used
+     * @return bool True if nonce is unique and can be used, false if already used
+     * @throws ValidationException If nonce format is invalid
+     */
+    public static function isNonceUnique(string $nonce, callable $checkCallback): bool
+    {
+        // Validate nonce format (should be 32-byte hex string for EVM)
+        if (!preg_match('/^0x[a-fA-F0-9]{64}$/', $nonce)) {
+            throw new ValidationException("Nonce must be a 32-byte hex string (0x + 64 hex characters)");
+        }
+
+        // Call the provided callback to check uniqueness
+        // The callback should return true if nonce is unique
+        return (bool) $checkCallback($nonce);
+    }
+
+    /**
+     * Mark a nonce as used to prevent replay attacks.
+     * 
+     * This helper method stores the nonce using the provided callback function.
+     * The callback should store the nonce in your database/cache with an appropriate
+     * expiration time (e.g., validBefore timestamp).
+     * 
+     * Example usage:
+     * ```php
+     * Validator::markNonceAsUsed($nonce, $validBefore, function($nonce, $expiry) use ($redis) {
+     *     $ttl = max(0, $expiry - time());
+     *     $redis->setex("nonce:$nonce", $ttl, '1');
+     * });
+     * ```
+     *
+     * @param string $nonce The nonce to mark as used
+     * @param int $validBefore Unix timestamp when the nonce expires
+     * @param callable $storeCallback Callback to store the nonce (receives nonce and validBefore timestamp)
+     * @throws ValidationException If nonce format is invalid
+     */
+    public static function markNonceAsUsed(string $nonce, int $validBefore, callable $storeCallback): void
+    {
+        // Validate nonce format (should be 32-byte hex string for EVM)
+        if (!preg_match('/^0x[a-fA-F0-9]{64}$/', $nonce)) {
+            throw new ValidationException("Nonce must be a 32-byte hex string (0x + 64 hex characters)");
+        }
+
+        // Validate expiration time
+        if ($validBefore <= 0) {
+            throw new ValidationException("validBefore must be a positive timestamp");
+        }
+
+        // Call the provided callback to store the nonce
+        $storeCallback($nonce, $validBefore);
     }
 }
