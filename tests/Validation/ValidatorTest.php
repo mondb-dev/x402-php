@@ -86,6 +86,25 @@ class ValidatorTest extends TestCase
         Validator::validatePaymentRequirements($data);
     }
 
+    public function testValidatePaymentRequirementsUnsupportedScheme(): void
+    {
+        $data = [
+            'scheme' => 'subscription',
+            'network' => 'base-sepolia',
+            'maxAmountRequired' => '1000000',
+            'resource' => 'https://example.com/api/data',
+            'description' => 'Test resource',
+            'mimeType' => 'application/json',
+            'payTo' => '0x1234567890123456789012345678901234567890',
+            'maxTimeoutSeconds' => 300,
+            'asset' => '0x0987654321098765432109876543210987654321',
+        ];
+
+        $this->expectException(ValidationException::class);
+        $this->expectExceptionMessage('Unsupported payment scheme: subscription');
+        Validator::validatePaymentRequirements($data);
+    }
+
     public function testSanitizeString(): void
     {
         $input = '<script>alert("xss")</script>';
@@ -107,5 +126,19 @@ class ValidatorTest extends TestCase
     {
         $this->expectException(ValidationException::class);
         Validator::sanitizeUrl('not-a-valid-url');
+    }
+
+    public function testValidatePaymentPayloadUnsupportedScheme(): void
+    {
+        $data = [
+            'x402Version' => 1,
+            'scheme' => 'subscription',
+            'network' => 'base-sepolia',
+            'payload' => [],
+        ];
+
+        $this->expectException(ValidationException::class);
+        $this->expectExceptionMessage('Unsupported payment scheme: subscription');
+        Validator::validatePaymentPayload($data);
     }
 }

@@ -6,6 +6,7 @@ namespace X402\Facilitator;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\Exception\RequestException;
 use X402\Encoding\Encoder;
 use X402\Exceptions\FacilitatorException;
 use X402\Types\PaymentRequirements;
@@ -23,23 +24,52 @@ class FacilitatorClient
 
     /**
      * @param string $facilitatorUrl Base URL of the facilitator server
-     * @param array<string, mixed> $httpOptions Additional Guzzle HTTP client options
+     * @param array<string, mixed>|int|null $httpOptions Additional Guzzle HTTP client options or timeout seconds
      */
     public function __construct(
-        private readonly string $facilitatorUrl,
-        array $httpOptions = []
+        string $facilitatorUrl,
+        array|int|null $httpOptions = null,
+        ?string $apiKey = null
     ) {
+        if (!filter_var($facilitatorUrl, FILTER_VALIDATE_URL)) {
+            throw new FacilitatorException('Invalid facilitator base URL');
+        }
+
+        $scheme = parse_url($facilitatorUrl, PHP_URL_SCHEME);
+        if ($scheme !== 'https') {
+            throw new FacilitatorException('Facilitator URL must use HTTPS');
+        }
+
+        $normalizedUrl = rtrim($facilitatorUrl, '/');
+
+        $options = [];
+
+        if (is_int($httpOptions)) {
+            $options['timeout'] = $httpOptions;
+        } elseif (is_array($httpOptions)) {
+            $options = $httpOptions;
+        }
+
+        if ($apiKey !== null) {
+            $options['headers']['X-API-Key'] = $apiKey;
+        }
+
         $defaultOptions = [
-            'base_uri' => rtrim($facilitatorUrl, '/'),
-            'timeout' => 30,
-            'headers' => [
-                'Content-Type' => 'application/json',
-                'Accept' => 'application/json',
-                'User-Agent' => 'x402-php/' . self::VERSION,
-            ],
+            'base_uri' => $normalizedUrl,
+            'timeout' => $options['timeout'] ?? 30,
+            'headers' => array_merge(
+                [
+                    'Content-Type' => 'application/json',
+                    'Accept' => 'application/json',
+                    'User-Agent' => 'x402-php/' . self::VERSION,
+                ],
+                $options['headers'] ?? []
+            ),
         ];
 
-        $this->httpClient = new Client(array_merge($defaultOptions, $httpOptions));
+        unset($options['timeout'], $options['headers']);
+
+        $this->httpClient = new Client(array_replace_recursive($defaultOptions, $options));
     }
 
     /**
@@ -52,7 +82,7 @@ class FacilitatorClient
     public static function coinbase(?string $apiKey = null, int $timeout = 30): self
     {
         $options = ['timeout' => $timeout];
-        
+
         if ($apiKey !== null) {
             $options['headers'] = ['X-API-Key' => $apiKey];
         }
@@ -98,8 +128,8 @@ class FacilitatorClient
     public static function fromEnvironment(): ?self
     {
         $baseUrl = getenv('FACILITATOR_BASE_URL');
-        
-        if (!$baseUrl || $baseUrl === false) {
+
+        if ($baseUrl === false || $baseUrl === '') {
             return null;
         }
 
@@ -108,7 +138,7 @@ class FacilitatorClient
         ];
 
         $apiKey = getenv('FACILITATOR_API_KEY');
-        if ($apiKey && $apiKey !== false) {
+        if ($apiKey !== false && $apiKey !== '') {
             $options['headers'] = ['X-API-Key' => $apiKey];
         }
 
@@ -127,6 +157,10 @@ class FacilitatorClient
         string $paymentHeader,
         PaymentRequirements $requirements
     ): VerifyResponse {
+        if (trim($paymentHeader) === '') {
+            throw new FacilitatorException('Invalid payment header');
+        }
+
         $payload = [
             'x402Version' => 1,
             'paymentHeader' => $paymentHeader,
@@ -166,6 +200,10 @@ class FacilitatorClient
         string $paymentHeader,
         PaymentRequirements $requirements
     ): SettleResponse {
+        if (trim($paymentHeader) === '') {
+            throw new FacilitatorException('Invalid payment header');
+        }
+
         $payload = [
             'x402Version' => 1,
             'paymentHeader' => $paymentHeader,
@@ -248,24 +286,27 @@ class FacilitatorClient
         $errorMessage = "Failed to {$action}: " . $e->getMessage();
         
         // Try to parse error response from Coinbase Facilitator
-        if (method_exists($e, 'hasResponse') && $e->hasResponse()) {
+        if ($e instanceof RequestException && $e->hasResponse()) {
             $response = $e->getResponse();
-            $body = (string)$response->getBody();
-            
-            try {
-                $errorData = Encoder::decodeJson($body);
-                
-                if (is_array($errorData) && isset($errorData['error'])) {
-                    if (is_array($errorData['error'])) {
-                        // Coinbase format: { error: { code, message, details } }
-                        $errorMessage = "Failed to {$action}: " . ($errorData['error']['message'] ?? 'Unknown error');
-                    } else {
-                        // Simple format: { error: "message" }
-                        $errorMessage = "Failed to {$action}: " . $errorData['error'];
+
+            if ($response !== null) {
+                $body = (string)$response->getBody();
+
+                try {
+                    $errorData = Encoder::decodeJson($body);
+
+                    if (is_array($errorData) && isset($errorData['error'])) {
+                        if (is_array($errorData['error'])) {
+                            // Coinbase format: { error: { code, message, details } }
+                            $errorMessage = "Failed to {$action}: " . ($errorData['error']['message'] ?? 'Unknown error');
+                        } else {
+                            // Simple format: { error: "message" }
+                            $errorMessage = "Failed to {$action}: " . $errorData['error'];
+                        }
                     }
+                } catch (\Exception $jsonException) {
+                    // Ignore JSON parsing errors, use original message
                 }
-            } catch (\Exception $jsonException) {
-                // Ignore JSON parsing errors, use original message
             }
         }
 

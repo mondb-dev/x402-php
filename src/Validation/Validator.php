@@ -14,7 +14,7 @@ class Validator
     /**
      * Supported x402 network IDs.
      */
-    private const SUPPORTED_NETWORKS = [
+    public const SUPPORTED_NETWORKS = [
         // Ethereum
         'ethereum-mainnet',
         'ethereum-sepolia',
@@ -40,6 +40,13 @@ class Validator
         'solana-mainnet',
         'solana-devnet',
         'solana-testnet',
+    ];
+
+    /**
+     * Supported payment schemes.
+     */
+    public const SUPPORTED_SCHEMES = [
+        'exact',
     ];
 
     /**
@@ -114,6 +121,14 @@ class Validator
     }
 
     /**
+     * Determine if the payment scheme is supported by the library.
+     */
+    public static function isSupportedScheme(string $scheme): bool
+    {
+        return in_array($scheme, self::SUPPORTED_SCHEMES, true);
+    }
+
+    /**
      * Check if a network is SVM (Solana).
      *
      * @param string $network
@@ -155,6 +170,11 @@ class Validator
         $network = $data['network'] ?? '';
         if (!self::isValidNetwork($network)) {
             throw new ValidationException("Invalid network. Supported networks: " . implode(', ', self::SUPPORTED_NETWORKS));
+        }
+
+        $scheme = $data['scheme'] ?? '';
+        if (!self::isSupportedScheme($scheme)) {
+            throw new ValidationException("Unsupported payment scheme: {$scheme}");
         }
 
         $maxAmount = $data['maxAmountRequired'] ?? $data['max_amount_required'] ?? '';
@@ -206,6 +226,10 @@ class Validator
 
         $scheme = $data['scheme'];
         $network = $data['network'];
+
+        if (!self::isSupportedScheme($scheme)) {
+            throw new ValidationException("Unsupported payment scheme: {$scheme}");
+        }
         
         if ($scheme === 'exact') {
             if (self::isSvmNetwork($network)) {
@@ -294,7 +318,13 @@ class Validator
      */
     private static function toSnakeCase(string $input): string
     {
-        return strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $input));
+        $converted = preg_replace('/(?<!^)[A-Z]/', '_$0', $input);
+
+        if ($converted === null) {
+            return strtolower($input);
+        }
+
+        return strtolower($converted);
     }
 
     /**
@@ -314,18 +344,26 @@ class Validator
         }
 
         $transaction = $payload['transaction'];
-        
+
+        if (!is_string($transaction)) {
+            throw new ValidationException("Solana transaction must be a string");
+        }
+
+        if ($transaction === '') {
+            throw new ValidationException("Solana transaction is empty");
+        }
+
         // Validate base64 format
         if (!preg_match('/^[A-Za-z0-9+\/]+=*$/', $transaction)) {
-            throw new ValidationException("Solana transaction must be a valid base64 string");
+            throw new ValidationException("Invalid base64-encoded Solana transaction");
         }
-        
+
         // Validate the transaction can be base64 decoded
         $decoded = base64_decode($transaction, true);
         if ($decoded === false) {
-            throw new ValidationException("Solana transaction must be a valid base64-encoded transaction");
+            throw new ValidationException("Invalid base64-encoded Solana transaction");
         }
-        
+
         // Basic length check - Solana transactions are typically 500-1232 bytes
         $length = strlen($decoded);
         if ($length < 100 || $length > 1500) {

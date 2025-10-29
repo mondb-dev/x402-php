@@ -23,10 +23,7 @@ class Encoder
     public static function encodePaymentHeader(PaymentPayload $payload): string
     {
         $json = json_encode($payload->toArray(), JSON_THROW_ON_ERROR);
-        if ($json === false) {
-            throw new ValidationException("Failed to encode payment payload to JSON");
-        }
-        
+
         return base64_encode($json);
     }
 

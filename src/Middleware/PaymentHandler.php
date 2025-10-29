@@ -73,6 +73,16 @@ class PaymentHandler
         ?array $extra = null,
         ?string $id = null
     ): PaymentRequirements {
+        if (!Validator::isSupportedScheme($scheme)) {
+            throw new ValidationException("Unsupported payment scheme: {$scheme}");
+        }
+
+        if (!Validator::isValidNetwork($network)) {
+            throw new ValidationException(
+                'Invalid network. Supported networks: ' . implode(', ', Validator::SUPPORTED_NETWORKS)
+            );
+        }
+
         // Validate inputs
         if (!Validator::isValidAddress($payTo, $network)) {
             $addressType = Validator::isSvmNetwork($network) ? 'Solana' : 'Ethereum';
@@ -145,7 +155,7 @@ class PaymentHandler
     /**
      * Extract payment header from HTTP headers.
      *
-     * @param array<string, string|array<string>> $headers HTTP headers
+     * @param array<string, string|array<int, string>|null> $headers HTTP headers
      * @return string|null Payment header value or null if not present
      */
     public function extractPaymentHeader(array $headers): ?string
@@ -209,6 +219,20 @@ class PaymentHandler
             );
         }
 
+        if (!Validator::isSupportedScheme($requirements->scheme)) {
+            throw new PaymentRequiredException(
+                'Unsupported payment scheme: ' . $requirements->scheme,
+                ErrorCodes::INVALID_SCHEME
+            );
+        }
+
+        if (!Validator::isSupportedScheme($payload->scheme)) {
+            throw new PaymentRequiredException(
+                'Unsupported payment scheme: ' . $payload->scheme,
+                ErrorCodes::INVALID_SCHEME
+            );
+        }
+
         if ($payload->network !== $requirements->network) {
             throw new PaymentRequiredException(
                 "Payment network mismatch",
@@ -233,6 +257,7 @@ class PaymentHandler
                 throw new PaymentRequiredException(
                     'Payment verification failed: ' . $e->getMessage(),
                     ErrorCodes::FACILITATOR_ERROR,
+                    0,
                     $e
                 );
             }

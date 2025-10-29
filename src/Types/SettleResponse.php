@@ -95,7 +95,7 @@ class SettleResponse implements JsonSerializable
                 'submittedAt' => $this->submittedAt,
                 'explorerUrl' => $this->explorerUrl,
             ],
-            static fn($value) => $value !== null || is_bool($value)
+            static fn($value) => $value !== null
         );
     }
 
