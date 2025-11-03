@@ -229,10 +229,9 @@ try {
         'error' => $e->getMessage(),
         'code' => $e->getCode(),
     ]);
-    
+
     // Return appropriate error response
-    http_response_code(402);
-    // ... return payment required response
+    $handler->createPaymentRequiredResponse($requirements)->send();
 } catch (ValidationException $e) {
     $logger->error('Validation error', ['error' => $e->getMessage()]);
     http_response_code(400);

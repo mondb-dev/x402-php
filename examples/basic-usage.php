@@ -86,15 +86,17 @@ if ($result['verified']) {
     echo "Payment required!\n";
     
     $paymentRequiredResponse = $handler->createPaymentRequiredResponse($requirements);
-    
+
     // Return 402 status with required x402 protocol headers
-    http_response_code(402);
-    
-    // Add all required x402 headers
-    $headers = $paymentRequiredResponse->getHeaders();
-    foreach ($headers as $name => $value) {
-        header("{$name}: {$value}");
-    }
-    
-    echo json_encode($paymentRequiredResponse) . "\n";
+    $paymentRequiredResponse->send(
+        headerSender: static function (string $name, string $value): void {
+            echo "Add header: {$name}: {$value}\n";
+        },
+        statusSender: static function (int $statusCode): void {
+            echo "HTTP Status: {$statusCode}\n";
+        },
+        bodySender: static function (string $body): void {
+            echo $body . "\n";
+        }
+    );
 }
