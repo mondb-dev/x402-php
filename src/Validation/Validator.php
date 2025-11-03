@@ -90,13 +90,14 @@ class Validator
     }
 
     /**
-     * Validate that a string represents a valid positive integer.
+     * Validate that a string represents a valid positive integer (uint256 compatible).
      *
      * @param string $value
      * @return bool
      */
     public static function isValidUintString(string $value): bool
     {
+        // Must contain only digits
         if (!preg_match('/^\d+$/', $value)) {
             return false;
         }
@@ -106,7 +107,62 @@ class Validator
             return false;
         }
         
+        // Check uint256 max value (2^256 - 1 = 78 digits max)
+        if (strlen($value) > 78) {
+            return false;
+        }
+        
+        // If exactly 78 digits, ensure it doesn't exceed max uint256
+        if (strlen($value) === 78) {
+            // Max uint256: 115792089237316195423570985008687907853269984665640564039457584007913129639935
+            $maxUint256 = '115792089237316195423570985008687907853269984665640564039457584007913129639935';
+            if (strcmp($value, $maxUint256) > 0) {
+                return false;
+            }
+        }
+        
         return true;
+    }
+    
+    /**
+     * Validate EIP-712 domain parameters.
+     *
+     * @param array<string, mixed> $extra Extra parameters containing domain info
+     * @throws ValidationException
+     */
+    public static function validateEip712Domain(array $extra): void
+    {
+        if (!isset($extra['name']) || !is_string($extra['name'])) {
+            throw new ValidationException(
+                'EIP-712 domain name required in extra field'
+            );
+        }
+        
+        if (!isset($extra['version']) || !is_string($extra['version'])) {
+            throw new ValidationException(
+                'EIP-712 domain version required in extra field'
+            );
+        }
+        
+        // Validate name is not empty and reasonable length
+        $name = trim($extra['name']);
+        if ($name === '') {
+            throw new ValidationException('EIP-712 domain name cannot be empty');
+        }
+        
+        if (strlen($name) > 100) {
+            throw new ValidationException('EIP-712 domain name is too long (max 100 characters)');
+        }
+        
+        // Validate version is not empty and reasonable length
+        $version = trim($extra['version']);
+        if ($version === '') {
+            throw new ValidationException('EIP-712 domain version cannot be empty');
+        }
+        
+        if (strlen($version) > 20) {
+            throw new ValidationException('EIP-712 domain version is too long (max 20 characters)');
+        }
     }
 
     /**
@@ -379,13 +435,27 @@ class Validator
     }
 
     /**
-     * Sanitize string input to prevent XSS.
+     * Sanitize string input to prevent XSS and other injection attacks.
      *
      * @param string $input
+     * @param int $maxLength Maximum allowed length (default: 1000)
      * @return string
      */
-    public static function sanitizeString(string $input): string
+    public static function sanitizeString(string $input, int $maxLength = 1000): string
     {
+        // Remove control characters except newlines/tabs
+        $input = preg_replace('/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/u', '', $input);
+        
+        if ($input === null) {
+            $input = '';
+        }
+        
+        // Limit length to prevent DoS
+        if (strlen($input) > $maxLength) {
+            $input = substr($input, 0, $maxLength);
+        }
+        
+        // HTML encode for XSS protection
         return htmlspecialchars($input, ENT_QUOTES | ENT_HTML5, 'UTF-8');
     }
 
@@ -398,10 +468,23 @@ class Validator
      */
     public static function sanitizeUrl(string $url): string
     {
+        // Sanitize URL
         $sanitized = filter_var($url, FILTER_SANITIZE_URL);
+        
         if ($sanitized === false || !filter_var($sanitized, FILTER_VALIDATE_URL)) {
             throw new ValidationException("Invalid URL format");
         }
+        
+        // Only allow http/https schemes for security
+        $scheme = parse_url($sanitized, PHP_URL_SCHEME);
+        if ($scheme === false || $scheme === null) {
+            throw new ValidationException("URL must include a scheme");
+        }
+        
+        if (!in_array(strtolower($scheme), ['http', 'https'], true)) {
+            throw new ValidationException("URL must use http or https scheme");
+        }
+        
         return $sanitized;
     }
 

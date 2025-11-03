@@ -61,9 +61,30 @@ class PaymentRequiredResponse implements JsonSerializable
     /**
      * Send headers and body for a 402 Payment Required response.
      *
-     * This helper ensures headers are emitted before the HTTP status code so
-     * that PHP does not downgrade the response to 401 when WWW-Authenticate is
-     * present.
+     * ⚠️ IMPORTANT PHP QUIRK: This method sends headers BEFORE the status code.
+     * 
+     * PHP has a quirk where setting WWW-Authenticate header causes the status code
+     * to be automatically overridden to 401 Unauthorized if http_response_code(402)
+     * is called before the header is set. This is standard PHP behavior.
+     * 
+     * This method ensures the correct order:
+     * 1. Send headers (including WWW-Authenticate)
+     * 2. Set status code to 402
+     * 3. Output body
+     * 
+     * Example of the issue:
+     * ```php
+     * // ❌ WRONG - PHP will override to 401
+     * http_response_code(402);
+     * header('WWW-Authenticate: X-Payment');
+     * 
+     * // ✅ CORRECT - Results in 402
+     * header('WWW-Authenticate: X-Payment');
+     * http_response_code(402);
+     * 
+     * // ✅ BEST - Use this method
+     * $response->send();
+     * ```
      *
      * @param callable(string, string): void|null $headerSender Callback used to send headers
      * @param callable(int): void|null $statusSender Callback used to set the HTTP status code

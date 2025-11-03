@@ -40,7 +40,22 @@ class ErrorCodes
     // Facilitator errors
     public const FACILITATOR_ERROR = 'facilitator_error';
     public const FACILITATOR_VERIFICATION_FAILED = 'facilitator_verification_failed';
+    public const FACILITATOR_REQUIRED = 'facilitator_required';
     
     // Transaction errors
     public const INVALID_TRANSACTION_STATE = 'invalid_transaction_state';
+    
+    // Rate limiting
+    public const RATE_LIMIT_EXCEEDED = 'rate_limit_exceeded';
+    
+    // Compliance
+    public const COMPLIANCE_CHECK_FAILED = 'compliance_check_failed';
+    public const ADDRESS_BLOCKED = 'address_blocked';
+    
+    // Nonce/Replay protection
+    public const NONCE_ALREADY_USED = 'nonce_already_used';
+    public const INVALID_NONCE = 'invalid_nonce';
+    
+    // EIP-712 Domain
+    public const INVALID_EIP712_DOMAIN = 'invalid_eip712_domain';
 }

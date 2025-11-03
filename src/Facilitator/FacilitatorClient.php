@@ -57,6 +57,7 @@ class FacilitatorClient
         $defaultOptions = [
             'base_uri' => $normalizedUrl,
             'timeout' => $options['timeout'] ?? 30,
+            'connect_timeout' => $options['connect_timeout'] ?? 5,
             'headers' => array_merge(
                 [
                     'Content-Type' => 'application/json',
@@ -65,9 +66,10 @@ class FacilitatorClient
                 ],
                 $options['headers'] ?? []
             ),
+            'http_errors' => true,
         ];
 
-        unset($options['timeout'], $options['headers']);
+        unset($options['timeout'], $options['connect_timeout'], $options['headers']);
 
         $this->httpClient = new Client(array_replace_recursive($defaultOptions, $options));
     }
@@ -89,6 +91,27 @@ class FacilitatorClient
 
         return new self(
             'https://facilitator.coinbase.com/api/v1',
+            $options
+        );
+    }
+
+    /**
+     * Create a client for PayAI Facilitator (default).
+     *
+     * @param string|null $apiKey Optional API key
+     * @param int $timeout Request timeout in seconds
+     * @return self
+     */
+    public static function payai(?string $apiKey = null, int $timeout = 30): self
+    {
+        $options = ['timeout' => $timeout];
+
+        if ($apiKey !== null) {
+            $options['headers'] = ['X-API-Key' => $apiKey];
+        }
+
+        return new self(
+            'https://facilitator.payai.network',
             $options
         );
     }
@@ -275,6 +298,9 @@ class FacilitatorClient
 
     /**
      * Handle Guzzle exceptions and parse error responses.
+     * 
+     * SECURITY: This method sanitizes error responses to prevent information leakage.
+     * Detailed errors are logged but not exposed to clients.
      *
      * @param GuzzleException $e
      * @param string $action
@@ -283,29 +309,44 @@ class FacilitatorClient
      */
     private function handleGuzzleException(GuzzleException $e, string $action): never
     {
-        $errorMessage = "Failed to {$action}: " . $e->getMessage();
+        // Default safe error message
+        $errorMessage = "Failed to {$action}";
+        $errorCode = 'facilitator_error';
         
-        // Try to parse error response from Coinbase Facilitator
+        // Log detailed error for debugging (should be configured to use PSR-3 logger in production)
+        error_log(sprintf(
+            '[x402-php] Facilitator error [%s]: %s',
+            $action,
+            $e->getMessage()
+        ));
+        
+        // Parse HTTP response for safe error categorization
         if ($e instanceof RequestException && $e->hasResponse()) {
             $response = $e->getResponse();
-
+            
             if ($response !== null) {
+                $statusCode = $response->getStatusCode();
+                
+                // Only expose safe, high-level error categories (no internal details)
+                $errorMessage = match (true) {
+                    $statusCode === 400 => "Invalid payment request",
+                    $statusCode === 401, $statusCode === 403 => "Authentication failed",
+                    $statusCode === 404 => "Facilitator endpoint not found",
+                    $statusCode === 429 => "Rate limit exceeded",
+                    $statusCode >= 500 => "Facilitator service unavailable",
+                    default => "Payment verification failed"
+                };
+                
+                $errorCode = "facilitator_http_{$statusCode}";
+                
+                // Log response body for debugging (NOT exposed to client)
                 $body = (string)$response->getBody();
-
-                try {
-                    $errorData = Encoder::decodeJson($body);
-
-                    if (is_array($errorData) && isset($errorData['error'])) {
-                        if (is_array($errorData['error'])) {
-                            // Coinbase format: { error: { code, message, details } }
-                            $errorMessage = "Failed to {$action}: " . ($errorData['error']['message'] ?? 'Unknown error');
-                        } else {
-                            // Simple format: { error: "message" }
-                            $errorMessage = "Failed to {$action}: " . $errorData['error'];
-                        }
-                    }
-                } catch (\Exception $jsonException) {
-                    // Ignore JSON parsing errors, use original message
+                if ($body !== '') {
+                    error_log(sprintf(
+                        '[x402-php] Facilitator response [%d]: %s',
+                        $statusCode,
+                        substr($body, 0, 500) // Limit log size
+                    ));
                 }
             }
         }

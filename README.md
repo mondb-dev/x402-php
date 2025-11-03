@@ -5,8 +5,13 @@ PHP implementation of the [x402 payments protocol](https://github.com/coinbase/x
 ## Features
 
 - ✅ **Full x402 Protocol Support**: Implements the complete x402 specification
-- ✅ **E-commerce & Banking Standards**: Built with proper validations and security best practices
+- ✅ **Enterprise Security**: Nonce tracking, rate limiting, compliance checks, audit logging
 - ✅ **Production Ready**: Comprehensive error handling and developer-friendly API
+- ✅ **Default Facilitator**: Pre-configured with PayAI facilitator (https://facilitator.payai.network)
+- ✅ **Replay Attack Prevention**: Built-in nonce tracking with Redis backend
+- ✅ **DoS Protection**: Configurable rate limiting to prevent abuse
+- ✅ **Compliance Ready**: Optional AML/KYC integration hooks
+- ✅ **Monitoring**: PSR-3 logging and metrics interfaces for observability
 - ✅ **Composer Compatible**: Easy installation via Composer
 - ✅ **Type Safe**: Uses PHP 8.1+ strict types for reliability
 - ✅ **Well Tested**: Comprehensive PHPUnit test coverage
@@ -32,10 +37,12 @@ composer require mondb-dev/x402-php
 - PHP 8.1 or higher
 - JSON extension
 - Guzzle HTTP client
+- Redis extension (optional, but recommended for production)
+- PSR-3 Logger implementation (optional, recommended)
 
 ## Quick Start
 
-### Using Coinbase Facilitator (Recommended)
+### Basic Setup
 
 ```php
 <?php
@@ -43,15 +50,20 @@ composer require mondb-dev/x402-php
 use X402\Facilitator\FacilitatorClient;
 use X402\Middleware\PaymentHandler;
 
-// Option 1: Use Coinbase Facilitator (easiest)
-$facilitator = FacilitatorClient::coinbase(
-    apiKey: getenv('COINBASE_FACILITATOR_API_KEY')  // Optional for testing
+// Option 1: Use PayAI Facilitator (default, recommended)
+$facilitator = FacilitatorClient::payai(
+    apiKey: getenv('FACILITATOR_API_KEY')  // Optional for testing
 );
 
-// Option 2: Use environment variables
+// Option 2: Use Coinbase Facilitator
+$facilitator = FacilitatorClient::coinbase(
+    apiKey: getenv('COINBASE_FACILITATOR_API_KEY')
+);
+
+// Option 3: Use environment variables
 $facilitator = FacilitatorClient::fromEnvironment();
 
-// Option 3: Custom facilitator
+// Option 4: Custom facilitator
 $facilitator = new FacilitatorClient('https://your-facilitator.example.com');
 
 // Initialize payment handler
@@ -89,20 +101,83 @@ if ($result['verified']) {
 }
 ```
 
-### Configuration
+### Production Setup with All Security Features
 
-For production use with Coinbase Facilitator, configure your environment:
+For production deployments, enable all security features:
 
-```bash
-# Copy the example configuration
-cp .env.example .env
+```php
+use X402\Facilitator\FacilitatorClient;
+use X402\Middleware\PaymentHandler;
+use X402\Nonce\RedisNonceTracker;
+use X402\RateLimit\RedisRateLimiter;
+use Monolog\Logger;
+use Monolog\Handler\RotatingFileHandler;
 
-# Edit .env and add your Coinbase Facilitator API key (optional for testing)
-FACILITATOR_TYPE=coinbase
-COINBASE_FACILITATOR_API_KEY=your_api_key_here
+// Configure Redis
+$redis = new Redis();
+$redis->connect('127.0.0.1', 6379);
+
+// Configure facilitator
+$facilitator = FacilitatorClient::payai(apiKey: getenv('FACILITATOR_API_KEY'));
+
+// Configure nonce tracker (prevents replay attacks)
+$nonceTracker = new RedisNonceTracker($redis, 'myapp');
+
+// Configure rate limiter (prevents DoS)
+$rateLimiter = new RedisRateLimiter($redis, maxAttempts: 10, decaySeconds: 60);
+
+// Configure logger
+$logger = new Logger('x402');
+$logger->pushHandler(new RotatingFileHandler('/var/log/x402/payments.log', 30));
+
+// Create secure payment handler
+$handler = new PaymentHandler(
+    facilitator: $facilitator,
+    autoSettle: true,
+    validBeforeBufferSeconds: 6,
+    nonceTracker: $nonceTracker,
+    rateLimiter: $rateLimiter,
+    logger: $logger
+);
 ```
 
-See `examples/coinbase-facilitator.php` for a complete working example.
+**Required Environment Variables**:
+```bash
+# Facilitator (REQUIRED)
+FACILITATOR_BASE_URL=https://facilitator.payai.network
+FACILITATOR_API_KEY=your_api_key_here
+APP_ENV=production
+
+# Redis (REQUIRED for nonce tracking)
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=your_password
+
+# Rate Limiting (RECOMMENDED)
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_MAX_ATTEMPTS=10
+RATE_LIMIT_DECAY_SECONDS=60
+```
+
+See `examples/production-setup.php` for a complete working example with all security features.
+
+### Validate Production Readiness
+
+Before deploying, run the production validator:
+
+```bash
+php bin/validate-production.php
+```
+
+This checks:
+- ✅ Facilitator configuration
+- ✅ Redis connectivity
+- ✅ Nonce tracking setup
+- ✅ Rate limiting configuration
+- ✅ PHP extensions
+- ✅ Security settings
+
+See [SECURITY_CHECKLIST.md](SECURITY_CHECKLIST.md) for complete production deployment guidelines.
 
 ## Architecture
 
@@ -253,6 +328,38 @@ $requirements = $handler->createPaymentRequirements(
 );
 ```
 
+## Common Pitfalls
+
+### ⚠️ HTTP 402 vs 401 Status Code Issue
+
+**Problem**: PHP automatically changes HTTP 402 to 401 when `WWW-Authenticate` header is set after the status code.
+
+**Solution**: Always use the `send()` method or set headers before status code:
+
+```php
+// ❌ WRONG - Returns 401 instead of 402
+http_response_code(402);
+header('WWW-Authenticate: X-Payment');
+echo json_encode($response);
+
+// ✅ CORRECT - Returns 402
+header('WWW-Authenticate: X-Payment');
+http_response_code(402);
+echo json_encode($response);
+
+// ✅ BEST - Use send() method
+$paymentRequired->send();  // Handles this automatically
+```
+
+**Why it matters**: Clients expect HTTP 402 for payment requirements. If they receive 401, they'll treat it as an authentication error, breaking the x402 protocol.
+
+**Test your responses**:
+```bash
+curl -I https://your-api.com/endpoint
+# Should return: HTTP/1.1 402 Payment Required
+# NOT: HTTP/1.1 401 Unauthorized
+```
+
 ## Testing
 
 Run the test suite:
@@ -280,16 +387,34 @@ Run PHP CS Fixer for code style:
 
 See the `examples/` directory for complete working examples:
 - `basic-usage.php`: Simple payment-required endpoint
+- `production-setup.php`: Production-ready setup with all security features
+- `coinbase-facilitator.php`: Using Coinbase facilitator
+- `solana-usage.php`: Solana (SVM) payment example
 
 ## Security
 
-This library implements several security measures:
+This library implements comprehensive enterprise-grade security measures:
+
+### Built-in Security Features
 
 1. **Input Validation**: All inputs are validated before processing
 2. **Type Safety**: Uses PHP 8.1+ strict types
 3. **Sanitization**: All user inputs are sanitized to prevent XSS
-4. **Address Validation**: Ethereum addresses are validated with regex
-5. **Amount Validation**: Amounts are validated as proper uint256 strings
+4. **Address Validation**: Ethereum and Solana addresses validated with regex
+5. **Amount Validation**: Amounts validated as proper uint256 strings (with overflow protection)
+6. **URL Validation**: Only http/https schemes allowed
+7. **EIP-712 Domain Validation**: Ensures proper name/version format
+8. **Timing Buffer Validation**: Prevents negative or excessive buffer values
+
+### Advanced Security (Production)
+
+9. **Replay Attack Prevention**: Redis-based nonce tracking prevents payment reuse
+10. **Rate Limiting**: Sliding window rate limiter prevents DoS and brute force attacks
+11. **Compliance Checks**: Optional AML/KYC integration for sanctioned addresses
+12. **Audit Logging**: PSR-3 logger integration for complete audit trails
+13. **Error Sanitization**: Facilitator errors sanitized to prevent information leakage
+14. **Production Enforcement**: Automatically requires facilitator when APP_ENV=production
+15. **Metrics & Monitoring**: Built-in metrics interfaces for observability
 
 ### ⚠️ Important Security Considerations
 
@@ -357,17 +482,31 @@ $handler = new PaymentHandler($facilitator, autoSettle: true, validBeforeBufferS
 
 #### Additional Security Best Practices
 
-1. **Always use HTTPS** for facilitator communication
+1. **Always use HTTPS** for facilitator communication (enforced)
 2. **Validate all inputs** before creating payment requirements
-3. **Log payment attempts** for audit trails
-4. **Implement rate limiting** to prevent abuse
-5. **Monitor for replay attacks** (track used nonces)
+3. **Log payment attempts** for audit trails (use PSR-3 logger)
+4. **Implement rate limiting** to prevent abuse (RedisRateLimiter included)
+5. **Monitor for replay attacks** (use RedisNonceTracker)
 6. **Use environment variables** for sensitive configuration
 7. **Keep dependencies updated** to patch security vulnerabilities
+8. **Run production validator** before deploying (`bin/validate-production.php`)
+9. **Review SECURITY_CHECKLIST.md** for complete deployment guidelines
+10. **Enable metrics** for real-time threat detection
+
+### Security Checklist
+
+Before deploying to production, review [SECURITY_CHECKLIST.md](SECURITY_CHECKLIST.md) which covers:
+
+- ✅ **Mandatory**: Facilitator configuration
+- ✅ **Mandatory**: Nonce tracking (replay prevention)
+- ⚠️ **Highly Recommended**: Rate limiting
+- ⚠️ **Highly Recommended**: Audit logging
+- ⚪ **Optional**: Compliance checks (AML/KYC)
+- ⚪ **Optional**: Metrics and monitoring
 
 ### Reporting Security Issues
 
-Please report security vulnerabilities to the maintainers privately.
+Please report security vulnerabilities according to [SECURITY.md](SECURITY.md).
 
 ## Contributing
 
@@ -390,12 +529,16 @@ Apache-2.0 License - see LICENSE file for details
 
 ## Roadmap
 
+- [x] Replay attack prevention (nonce tracking)
+- [x] Rate limiting utilities
+- [x] Compliance check interfaces (AML/KYC)
+- [x] Metrics and monitoring interfaces
+- [x] PSR-3 logging support
+- [x] Production readiness validator
 - [ ] Support for additional payment schemes
 - [ ] Built-in middleware for popular PHP frameworks (Laravel, Symfony)
 - [ ] WebSocket support for real-time payment notifications
-- [ ] Additional network support (Ethereum, Polygon, etc.)
-- [ ] Rate limiting utilities
-- [ ] Payment analytics and reporting
+- [ ] Payment analytics and reporting dashboard
 
 ## Support
 

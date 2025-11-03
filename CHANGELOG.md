@@ -1,5 +1,181 @@
 # Changelog - x402-php Security and Protocol Compliance Fixes
 
+## [2.0.0] - 2025-11-03
+
+### 🚨 BREAKING CHANGES
+
+- `PaymentHandler` constructor now accepts additional optional parameters for security features
+- Production deployments now enforce facilitator requirement when `APP_ENV=production`
+- `validBeforeBufferSeconds` is now validated (must be 0-300)
+
+### 🔒 Major Security Enhancements
+
+#### Added - Replay Attack Prevention
+- **`NonceTrackerInterface`**: Interface for tracking used nonces
+- **`RedisNonceTracker`**: Redis-based implementation preventing payment replay attacks
+- Automatic nonce tracking in `PaymentHandler` when configured
+- Nonce validation throws `NONCE_ALREADY_USED` error code
+
+#### Added - DoS Protection
+- **`RateLimiterInterface`**: Interface for rate limiting payment verification attempts
+- **`RedisRateLimiter`**: Redis-based sliding window rate limiter
+- Rate limiting in `processPayment()` method
+- Returns HTTP 429 with `Retry-After` header when limit exceeded
+- New error code: `RATE_LIMIT_EXCEEDED`
+
+#### Added - Compliance & AML/KYC
+- **`ComplianceCheckInterface`**: Interface for AML/KYC address screening
+- **`ComplianceResult`**: Result object for compliance checks
+- **`ComplianceException`**: Exception for blocked addresses
+- Optional compliance check integration in payment verification
+- New error code: `ADDRESS_BLOCKED`, `COMPLIANCE_CHECK_FAILED`
+
+#### Added - Observability
+- **`MetricsInterface`**: Interface for recording payment metrics
+- PSR-3 logger support throughout payment flow
+- Automatic metrics recording for:
+  - Payment verification success/failure
+  - Verification duration
+  - Rate limit violations
+  - Replay attack attempts
+  - Compliance check results
+- Detailed audit logging for all payment operations
+
+#### Added - Production Hardening
+- **Environment-based facilitator enforcement**: Automatically requires facilitator when `APP_ENV=production`
+- **Input validation improvements**:
+  - `sanitizeString()` now removes control characters and enforces max length
+  - `sanitizeUrl()` enforces http/https schemes only
+  - `isValidUintString()` validates against uint256 max value
+  - New `validateEip712Domain()` ensures proper domain format
+- **Error sanitization**: Facilitator errors no longer leak internal details
+- **Connection timeout**: Added separate `connect_timeout` to HTTP client
+- **Timing buffer validation**: Enforces 0-300 second range
+
+#### Added - Default Facilitator
+- **`FacilitatorClient::payai()`**: New factory method for PayAI facilitator
+- **Default facilitator URL**: `https://facilitator.payai.network`
+- Updated examples to use PayAI as default
+
+### 📚 Documentation & Tooling
+
+#### Added
+- **`SECURITY_CHECKLIST.md`**: Comprehensive production deployment security guide
+- **`bin/validate-production.php`**: Production readiness validation script that checks:
+  - Environment configuration
+  - Facilitator connectivity
+  - Redis availability (for nonce tracking)
+  - Rate limiting setup
+  - PHP extensions
+  - Security settings
+- **`examples/production-setup.php`**: Complete production-ready example with all security features
+- Enhanced README with security features and production setup guide
+
+### 🐛 Bug Fixes
+
+#### Fixed
+- **HTTP 402 vs 401 status code**: `PaymentRequiredResponse::send()` now correctly emits headers before status code to prevent PHP from overriding 402 to 401 when `WWW-Authenticate` is present
+- **Solana payment validation timing**: Now checks for facilitator before processing payload
+- **Amount comparison**: Added validation that strings are valid uint256 before comparison
+- **EIP-712 domain validation**: Now enforces non-empty name/version with length limits
+- **Examples updated**: All examples now use `send()` method or correct header ordering
+
+### 📦 Dependencies
+
+#### Added
+- `psr/log: ^3.0` (PSR-3 logger interface)
+
+#### Suggested
+- `ext-redis`: Required for `RedisNonceTracker` and `RedisRateLimiter`
+- `monolog/monolog`: Recommended PSR-3 logger implementation
+
+### 📝 New Error Codes
+
+- `FACILITATOR_REQUIRED`: Facilitator is required but not configured
+- `RATE_LIMIT_EXCEEDED`: Too many payment attempts
+- `NONCE_ALREADY_USED`: Replay attack detected
+- `INVALID_NONCE`: Nonce format is invalid
+- `COMPLIANCE_CHECK_FAILED`: Compliance screening failed
+- `ADDRESS_BLOCKED`: Address is sanctioned/blocked
+- `INVALID_EIP712_DOMAIN`: EIP-712 domain parameters invalid
+
+### 🔧 API Changes
+
+#### `PaymentHandler::__construct()`
+```php
+// Before
+public function __construct(
+    private readonly ?FacilitatorClient $facilitator = null,
+    private readonly bool $autoSettle = true,
+    private readonly int $validBeforeBufferSeconds = 6
+)
+
+// After
+public function __construct(
+    private readonly ?FacilitatorClient $facilitator = null,
+    private readonly bool $autoSettle = true,
+    private readonly int $validBeforeBufferSeconds = 6,
+    private readonly ?NonceTrackerInterface $nonceTracker = null,
+    private readonly ?RateLimiterInterface $rateLimiter = null,
+    private readonly ?ComplianceCheckInterface $complianceCheck = null,
+    private readonly ?MetricsInterface $metrics = null,
+    private readonly ?LoggerInterface $logger = null
+)
+```
+
+#### `PaymentHandler::processPayment()`
+```php
+// Before
+public function processPayment(array $headers, PaymentRequirements $requirements): array
+
+// After
+public function processPayment(
+    array $headers, 
+    PaymentRequirements $requirements,
+    ?string $identifier = null  // For rate limiting
+): array
+```
+
+### 🎯 Migration Guide
+
+#### Upgrading from 1.x to 2.0
+
+**Basic upgrade (no code changes required)**:
+```bash
+composer update mondb-dev/x402-php
+```
+
+**To enable new security features**:
+
+1. Install Redis extension:
+```bash
+pecl install redis
+```
+
+2. Update your code:
+```php
+use X402\Nonce\RedisNonceTracker;
+use X402\RateLimit\RedisRateLimiter;
+use Monolog\Logger;
+
+$redis = new Redis();
+$redis->connect('127.0.0.1', 6379);
+
+$handler = new PaymentHandler(
+    facilitator: $facilitator,
+    nonceTracker: new RedisNonceTracker($redis),
+    rateLimiter: new RedisRateLimiter($redis),
+    logger: new Logger('x402')
+);
+```
+
+3. Validate production readiness:
+```bash
+php bin/validate-production.php
+```
+
+4. Review [SECURITY_CHECKLIST.md](SECURITY_CHECKLIST.md)
+
 ## [Unreleased] - 2025-10-28
 
 ### 🔐 Security Enhancements

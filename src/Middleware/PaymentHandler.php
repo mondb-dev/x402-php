@@ -4,12 +4,19 @@ declare(strict_types=1);
 
 namespace X402\Middleware;
 
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
+use X402\Compliance\ComplianceCheckInterface;
 use X402\Encoding\Encoder;
+use X402\Exceptions\ComplianceException;
 use X402\Exceptions\ErrorCodes;
 use X402\Exceptions\PaymentRequiredException;
 use X402\Exceptions\ValidationException;
 use X402\Facilitator\FacilitatorClient;
 use X402\Exceptions\FacilitatorException;
+use X402\Metrics\MetricsInterface;
+use X402\Nonce\NonceTrackerInterface;
+use X402\RateLimit\RateLimiterInterface;
 use X402\Types\ExactPaymentPayload;
 use X402\Types\ExactSvmPayload;
 use X402\Types\PaymentPayload;
@@ -36,12 +43,49 @@ class PaymentHandler
      * @param FacilitatorClient|null $facilitator Optional facilitator client for verification/settlement
      * @param bool $autoSettle Whether to automatically settle payments (default: true)
      * @param int $validBeforeBufferSeconds Buffer time in seconds to account for block confirmation delays (default: 6)
+     * @param NonceTrackerInterface|null $nonceTracker Optional nonce tracker for replay attack prevention
+     * @param RateLimiterInterface|null $rateLimiter Optional rate limiter to prevent DoS attacks
+     * @param ComplianceCheckInterface|null $complianceCheck Optional AML/KYC compliance checker
+     * @param MetricsInterface|null $metrics Optional metrics recorder for monitoring
+     * @param LoggerInterface|null $logger Optional PSR-3 logger for audit trails
      */
     public function __construct(
         private readonly ?FacilitatorClient $facilitator = null,
         private readonly bool $autoSettle = true,
-        private readonly int $validBeforeBufferSeconds = self::DEFAULT_BUFFER_SECONDS
+        private readonly int $validBeforeBufferSeconds = self::DEFAULT_BUFFER_SECONDS,
+        private readonly ?NonceTrackerInterface $nonceTracker = null,
+        private readonly ?RateLimiterInterface $rateLimiter = null,
+        private readonly ?ComplianceCheckInterface $complianceCheck = null,
+        private readonly ?MetricsInterface $metrics = null,
+        private readonly ?LoggerInterface $logger = null
     ) {
+        // Validate buffer seconds range
+        if ($validBeforeBufferSeconds < 0) {
+            throw new \InvalidArgumentException('validBeforeBufferSeconds cannot be negative');
+        }
+        if ($validBeforeBufferSeconds > 300) {
+            throw new \InvalidArgumentException('validBeforeBufferSeconds cannot exceed 300 seconds (5 minutes)');
+        }
+        
+        // SECURITY: Enforce facilitator requirement in production
+        $appEnv = getenv('APP_ENV') ?: getenv('ENVIRONMENT') ?: 'production';
+        if ($facilitator === null && in_array(strtolower($appEnv), ['production', 'prod'], true)) {
+            throw new \RuntimeException(
+                'SECURITY: Facilitator is REQUIRED for production use. ' .
+                'Cryptographic signature verification cannot be performed locally. ' .
+                'Set APP_ENV=development for testing only.'
+            );
+        }
+        
+        // Log initialization (helps with debugging configuration issues)
+        $loggerToUse = $logger ?? new NullLogger();
+        $loggerToUse->info('PaymentHandler initialized', [
+            'has_facilitator' => $facilitator !== null,
+            'has_nonce_tracker' => $nonceTracker !== null,
+            'has_rate_limiter' => $rateLimiter !== null,
+            'has_compliance_check' => $complianceCheck !== null,
+            'buffer_seconds' => $validBeforeBufferSeconds,
+        ]);
     }
 
     /**
@@ -194,14 +238,41 @@ class PaymentHandler
      * @return PaymentPayload Validated payment payload
      * @throws ValidationException
      * @throws PaymentRequiredException
+     * @throws ComplianceException
      */
     public function verifyPayment(string $paymentHeader, PaymentRequirements $requirements): PaymentPayload
     {
+        $logger = $this->logger ?? new NullLogger();
+        $startTime = microtime(true);
+        
+        $logger->info('Payment verification started', [
+            'network' => $requirements->network,
+            'scheme' => $requirements->scheme,
+            'amount' => $requirements->maxAmountRequired,
+        ]);
+        
         // Decode payment header
         try {
             $payload = Encoder::decodePaymentHeader($paymentHeader);
         } catch (ValidationException $e) {
+            $this->metrics?->incrementCounter('payment.verification.failure', [
+                'reason' => 'invalid_header',
+                'network' => $requirements->network,
+            ]);
             throw new PaymentRequiredException("Invalid payment header: " . $e->getMessage());
+        }
+        
+        // SECURITY: Check Solana facilitator requirement FIRST (before any processing)
+        if ($payload->payload instanceof ExactSvmPayload && $this->facilitator === null) {
+            $logger->error('Solana payment attempted without facilitator');
+            $this->metrics?->incrementCounter('payment.verification.failure', [
+                'reason' => 'no_facilitator_solana',
+                'network' => $requirements->network,
+            ]);
+            throw new PaymentRequiredException(
+                'Facilitator is required for Solana payment verification',
+                ErrorCodes::FACILITATOR_REQUIRED
+            );
         }
 
         if ($payload->x402Version !== self::X402_VERSION) {
@@ -247,6 +318,61 @@ class PaymentHandler
                 $this->assertExactEvmAuthorizationMatchesRequirements($payload, $requirements);
             }
         }
+        
+        // SECURITY: Check for nonce replay attacks (EVM payments)
+        if ($payload->payload instanceof ExactPaymentPayload) {
+            $nonce = $payload->payload->authorization->nonce;
+            
+            if ($this->nonceTracker !== null) {
+                if ($this->nonceTracker->isNonceUsed($nonce)) {
+                    $logger->warning('Replay attack detected', ['nonce' => $nonce]);
+                    $this->metrics?->incrementCounter('payment.verification.failure', [
+                        'reason' => 'nonce_replay',
+                        'network' => $requirements->network,
+                    ]);
+                    throw new PaymentRequiredException(
+                        'Payment nonce has already been used (replay attack detected)',
+                        ErrorCodes::NONCE_ALREADY_USED
+                    );
+                }
+            }
+        }
+        
+        // SECURITY: Compliance check (if configured)
+        if ($this->complianceCheck !== null && $payload->payload instanceof ExactPaymentPayload) {
+            $fromAddress = $payload->payload->authorization->from;
+            
+            $logger->debug('Running compliance check', ['address' => $fromAddress]);
+            
+            try {
+                $complianceResult = $this->complianceCheck->checkAddress($fromAddress, $payload->network);
+                
+                if ($complianceResult->isBlocked()) {
+                    $logger->warning('Compliance check failed', [
+                        'address' => $fromAddress,
+                        'reason' => $complianceResult->getReason(),
+                    ]);
+                    $this->metrics?->incrementCounter('payment.verification.failure', [
+                        'reason' => 'compliance_blocked',
+                        'network' => $requirements->network,
+                    ]);
+                    throw new ComplianceException(
+                        $complianceResult->getReason() ?? 'Address is blocked',
+                        $fromAddress,
+                        $complianceResult->getMetadata()
+                    );
+                }
+            } catch (ComplianceException $e) {
+                // Re-throw compliance exceptions
+                throw $e;
+            } catch (\Exception $e) {
+                // Log but don't fail on compliance check errors
+                $logger->error('Compliance check error', [
+                    'address' => $fromAddress,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
 
         // Use facilitator for verification if available
         if ($this->facilitator !== null) {
@@ -254,6 +380,10 @@ class PaymentHandler
                 // Pass the original base64 encoded header to facilitator
                 $verifyResponse = $this->facilitator->verify($paymentHeader, $requirements);
             } catch (FacilitatorException $e) {
+                $this->metrics?->incrementCounter('payment.verification.failure', [
+                    'reason' => 'facilitator_error',
+                    'network' => $requirements->network,
+                ]);
                 throw new PaymentRequiredException(
                     'Payment verification failed: ' . $e->getMessage(),
                     ErrorCodes::FACILITATOR_ERROR,
@@ -263,12 +393,41 @@ class PaymentHandler
             }
 
             if (!$verifyResponse->isValid) {
+                $this->metrics?->incrementCounter('payment.verification.failure', [
+                    'reason' => 'facilitator_rejected',
+                    'network' => $requirements->network,
+                ]);
                 throw new PaymentRequiredException(
                     "Payment verification failed: " . ($verifyResponse->invalidReason ?? 'Unknown reason'),
                     ErrorCodes::FACILITATOR_VERIFICATION_FAILED
                 );
             }
         }
+        
+        // SECURITY: Mark nonce as used (after successful verification)
+        if ($payload->payload instanceof ExactPaymentPayload && $this->nonceTracker !== null) {
+            $nonce = $payload->payload->authorization->nonce;
+            $validBefore = (int)$payload->payload->authorization->validBefore;
+            $ttl = max(60, $validBefore - time()); // At least 60 seconds
+            
+            $this->nonceTracker->markNonceUsed($nonce, $ttl);
+            $logger->debug('Nonce marked as used', ['nonce' => $nonce, 'ttl' => $ttl]);
+        }
+        
+        // Record success metrics
+        $duration = microtime(true) - $startTime;
+        $this->metrics?->recordTiming('payment.verification.duration', $duration, [
+            'network' => $requirements->network,
+            'result' => 'success',
+        ]);
+        $this->metrics?->incrementCounter('payment.verification.success', [
+            'network' => $requirements->network,
+        ]);
+        
+        $logger->info('Payment verified successfully', [
+            'network' => $requirements->network,
+            'duration_ms' => round($duration * 1000, 2),
+        ]);
 
         return $payload;
     }
@@ -310,10 +469,44 @@ class PaymentHandler
      *
      * @param array<string, string|array<string>> $headers HTTP request headers
      * @param PaymentRequirements $requirements Payment requirements
+     * @param string|null $identifier Optional rate limit identifier (IP address, API key, etc.)
      * @return array{verified: bool, payload: PaymentPayload|null, settlement: array<string, mixed>|null}
+     * @throws PaymentRequiredException If rate limit exceeded
      */
-    public function processPayment(array $headers, PaymentRequirements $requirements): array
-    {
+    public function processPayment(
+        array $headers, 
+        PaymentRequirements $requirements,
+        ?string $identifier = null
+    ): array {
+        $logger = $this->logger ?? new NullLogger();
+        
+        // SECURITY: Rate limiting check
+        if ($this->rateLimiter !== null) {
+            // Use provided identifier or try to extract from headers
+            $rateLimitId = $identifier ?? $headers['REMOTE_ADDR'] ?? $headers['HTTP_X_FORWARDED_FOR'] ?? 'unknown';
+            
+            if ($this->rateLimiter->tooManyAttempts($rateLimitId)) {
+                $retryAfter = $this->rateLimiter->availableIn($rateLimitId);
+                
+                $logger->warning('Rate limit exceeded', [
+                    'identifier' => $rateLimitId,
+                    'retry_after' => $retryAfter,
+                ]);
+                
+                $this->metrics?->incrementCounter('payment.rate_limit.exceeded', [
+                    'identifier_type' => $identifier !== null ? 'custom' : 'ip',
+                ]);
+                
+                throw new PaymentRequiredException(
+                    "Too many payment attempts. Please try again in {$retryAfter} seconds.",
+                    ErrorCodes::RATE_LIMIT_EXCEEDED
+                );
+            }
+            
+            // Record the attempt
+            $this->rateLimiter->attempt($rateLimitId);
+        }
+        
         $paymentHeader = $this->extractPaymentHeader($headers);
 
         if ($paymentHeader === null) {
@@ -398,17 +591,12 @@ class PaymentHandler
         }
 
         // Validate EIP-712 domain parameters in extra field
-        if (!isset($requirements->extra['name']) || !is_string($requirements->extra['name'])) {
+        try {
+            Validator::validateEip712Domain($requirements->extra ?? []);
+        } catch (ValidationException $e) {
             throw new PaymentRequiredException(
-                'EIP-712 domain name required in extra field',
-                ErrorCodes::INVALID_EVM_SIGNATURE
-            );
-        }
-
-        if (!isset($requirements->extra['version']) || !is_string($requirements->extra['version'])) {
-            throw new PaymentRequiredException(
-                'EIP-712 domain version required in extra field',
-                ErrorCodes::INVALID_EVM_SIGNATURE
+                $e->getMessage(),
+                ErrorCodes::INVALID_EIP712_DOMAIN
             );
         }
 
@@ -489,9 +677,16 @@ class PaymentHandler
 
     /**
      * Compare two unsigned integer strings.
+     * 
+     * @throws ValidationException If strings are not valid uint256
      */
     private function compareUintStrings(string $a, string $b): int
     {
+        // SECURITY: Validate both are valid uint256 strings first
+        if (!Validator::isValidUintString($a) || !Validator::isValidUintString($b)) {
+            throw new ValidationException('Invalid uint256 string for comparison');
+        }
+        
         $a = ltrim($a, '0');
         $b = ltrim($b, '0');
 
