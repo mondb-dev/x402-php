@@ -84,9 +84,8 @@ if ($result['verified']) {
     }
 } else {
     // Payment required
-    http_response_code(402);
-    header('Content-Type: application/json');
-    echo json_encode($handler->createPaymentRequiredResponse($requirements));
+    $paymentRequiredResponse = $handler->createPaymentRequiredResponse($requirements);
+    $paymentRequiredResponse->send();
 }
 ```
 

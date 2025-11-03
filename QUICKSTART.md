@@ -64,14 +64,8 @@ if ($result['verified']) {
     }
 } else {
     // ❌ Payment required
-    http_response_code(402);
-    
     $response = $handler->createPaymentRequiredResponse($requirements);
-    foreach ($response->getHeaders() as $name => $value) {
-        header("{$name}: {$value}");
-    }
-    
-    echo json_encode($response);
+    $response->send();
 }
 ```
 
@@ -120,8 +114,7 @@ try {
     $result = $handler->processPayment($_SERVER, $requirements);
 } catch (PaymentRequiredException $e) {
     // Payment verification failed
-    http_response_code(402);
-    // Return payment required response
+    $handler->createPaymentRequiredResponse($requirements)->send();
 } catch (ValidationException $e) {
     // Invalid input
     http_response_code(400);

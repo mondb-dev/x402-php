@@ -147,12 +147,9 @@
    // Old way (still works but not recommended)
    http_response_code(402);
    header('Content-Type: application/json');
-   
+
    // New way (protocol compliant)
-   $headers = $paymentRequiredResponse->getHeaders();
-   foreach ($headers as $name => $value) {
-       header("{$name}: {$value}");
-   }
+   $paymentRequiredResponse->send();
    ```
 
 ## Migration Guide
@@ -169,10 +166,7 @@
 
 2. **Update 402 responses** to use proper headers:
    ```php
-   $response = $handler->createPaymentRequiredResponse($requirements);
-   foreach ($response->getHeaders() as $name => $value) {
-       header("{$name}: {$value}");
-   }
+   $handler->createPaymentRequiredResponse($requirements)->send();
    ```
 
 3. **Configure timing buffers** for your network:

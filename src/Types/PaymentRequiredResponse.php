@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace X402\Types;
 
 use JsonSerializable;
+use RuntimeException;
 
 /**
  * Response returned by a server alongside a 402 Payment Required status code.
@@ -47,6 +48,58 @@ class PaymentRequiredResponse implements JsonSerializable
             'Content-Type' => 'application/json',
             'X-Payment-Accept' => implode(', ', $schemes),
         ];
+    }
+
+    /**
+     * Get the HTTP status code for the response.
+     */
+    public function getStatusCode(): int
+    {
+        return 402;
+    }
+
+    /**
+     * Send headers and body for a 402 Payment Required response.
+     *
+     * This helper ensures headers are emitted before the HTTP status code so
+     * that PHP does not downgrade the response to 401 when WWW-Authenticate is
+     * present.
+     *
+     * @param callable(string, string): void|null $headerSender Callback used to send headers
+     * @param callable(int): void|null $statusSender Callback used to set the HTTP status code
+     * @param callable(string): void|null $bodySender Callback used to output the body
+     */
+    public function send(
+        ?callable $headerSender = null,
+        ?callable $statusSender = null,
+        ?callable $bodySender = null
+    ): void {
+        $headerSender ??= static function (string $name, string $value): void {
+            header("{$name}: {$value}", replace: true);
+        };
+
+        $statusSender ??= static function (int $statusCode): void {
+            http_response_code($statusCode);
+        };
+
+        $bodySender ??= static function (string $body): void {
+            echo $body;
+        };
+
+        foreach ($this->getHeaders() as $name => $value) {
+            $headerSender($name, $value);
+        }
+
+        $statusSender($this->getStatusCode());
+
+        $body = json_encode($this);
+        if ($body === false) {
+            throw new RuntimeException(
+                'Failed to encode payment required response: ' . json_last_error_msg()
+            );
+        }
+
+        $bodySender($body);
     }
 
     /**
