@@ -49,6 +49,7 @@ class ErrorCodes
     public const RATE_LIMIT_EXCEEDED = 'rate_limit_exceeded';
     
     // Compliance
+    public const COMPLIANCE_FAILED = 'compliance_failed';
     public const COMPLIANCE_CHECK_FAILED = 'compliance_check_failed';
     public const ADDRESS_BLOCKED = 'address_blocked';
     
@@ -58,4 +59,14 @@ class ErrorCodes
     
     // EIP-712 Domain
     public const INVALID_EIP712_DOMAIN = 'invalid_eip712_domain';
+    
+    // Configuration errors
+    public const CONFIG_MISSING = 'config_missing';
+    public const CONFIG_INVALID = 'config_invalid';
+    public const CONFIG_ENVIRONMENT = 'config_environment';
+    
+    // Network errors
+    public const NETWORK_ERROR = 'network_error';
+    public const NETWORK_TIMEOUT = 'network_timeout';
+    public const NETWORK_CONNECTION_FAILED = 'network_connection_failed';
 }

@@ -24,6 +24,7 @@ class PaymentRequirements implements JsonSerializable
      * @param string $asset Address of the EIP-3009 compliant ERC20 contract
      * @param array<string, mixed>|null $outputSchema Output schema of the resource response
      * @param array<string, mixed>|null $extra Extra information about the payment details specific to the scheme
+     * @param string|null $idempotencyKey Optional idempotency key for settlement operations
      */
     public function __construct(
         public readonly ?string $id = null,
@@ -37,8 +38,26 @@ class PaymentRequirements implements JsonSerializable
         public readonly int $maxTimeoutSeconds = 0,
         public readonly string $asset = '',
         public readonly ?array $outputSchema = null,
-        public readonly ?array $extra = null
+        public readonly ?array $extra = null,
+        public readonly ?string $idempotencyKey = null
     ) {
+        // Validate ID format if provided
+        if ($this->id !== null) {
+            if (!preg_match('/^[a-zA-Z0-9_-]{1,128}$/', $this->id)) {
+                throw new \X402\Exceptions\ValidationException(
+                    'Payment ID must be alphanumeric with hyphens/underscores, max 128 chars'
+                );
+            }
+        }
+
+        // Validate idempotency key format if provided
+        if ($this->idempotencyKey !== null) {
+            if (!preg_match('/^[a-zA-Z0-9_-]{1,128}$/', $this->idempotencyKey)) {
+                throw new \X402\Exceptions\ValidationException(
+                    'Idempotency key must be alphanumeric with hyphens/underscores, max 128 chars'
+                );
+            }
+        }
     }
 
     /**
@@ -61,7 +80,8 @@ class PaymentRequirements implements JsonSerializable
             maxTimeoutSeconds: (int)($data['maxTimeoutSeconds'] ?? $data['max_timeout_seconds'] ?? 0),
             asset: $data['asset'] ?? '',
             outputSchema: $data['outputSchema'] ?? $data['output_schema'] ?? null,
-            extra: $data['extra'] ?? null
+            extra: $data['extra'] ?? null,
+            idempotencyKey: $data['idempotencyKey'] ?? $data['idempotency_key'] ?? null
         );
     }
 
@@ -94,6 +114,10 @@ class PaymentRequirements implements JsonSerializable
 
         if ($this->extra !== null) {
             $result['extra'] = $this->extra;
+        }
+
+        if ($this->idempotencyKey !== null) {
+            $result['idempotencyKey'] = $this->idempotencyKey;
         }
 
         return $result;

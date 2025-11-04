@@ -71,7 +71,29 @@ class Validator
         // Solana addresses are base58 encoded public keys (32 bytes)
         // Base58 encoding results in 32-44 characters
         // Valid base58 characters: 123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz
-        return (bool)preg_match('/^[1-9A-HJ-NP-Za-km-z]{32,44}$/', $address);
+        if (!preg_match('/^[1-9A-HJ-NP-Za-km-z]{32,44}$/', $address)) {
+            return false;
+        }
+
+        // Additional validation: typical Solana addresses are 43-44 characters
+        $length = strlen($address);
+        if ($length < 32 || $length > 44) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Validate nonce format (32 bytes as hex string).
+     *
+     * @param string $nonce Nonce value (0x + 64 hex characters)
+     * @return bool True if valid nonce format
+     */
+    public static function isValidNonce(string $nonce): bool
+    {
+        // Must be 64 hex characters with 0x prefix (32 bytes)
+        return (bool)preg_match('/^0x[0-9a-fA-F]{64}$/', $nonce);
     }
 
     /**
@@ -93,9 +115,10 @@ class Validator
      * Validate that a string represents a valid positive integer (uint256 compatible).
      *
      * @param string $value
+     * @param int $maxDecimals Maximum number of digits (default: 78 for uint256)
      * @return bool
      */
-    public static function isValidUintString(string $value): bool
+    public static function isValidUintString(string $value, int $maxDecimals = 78): bool
     {
         // Must contain only digits
         if (!preg_match('/^\d+$/', $value)) {
@@ -107,14 +130,19 @@ class Validator
             return false;
         }
         
-        // Check uint256 max value (2^256 - 1 = 78 digits max)
-        if (strlen($value) > 78) {
+        // Check max digits
+        if (strlen($value) > $maxDecimals) {
             return false;
         }
         
-        // If exactly 78 digits, ensure it doesn't exceed max uint256
-        if (strlen($value) === 78) {
-            // Max uint256: 115792089237316195423570985008687907853269984665640564039457584007913129639935
+        // If bcmath is available, validate against uint256 max
+        if (function_exists('bccomp')) {
+            $uint256Max = '115792089237316195423570985008687907853269984665640564039457584007913129639935';
+            if (bccomp($value, $uint256Max, 0) > 0) {
+                return false;
+            }
+        } elseif (strlen($value) === 78) {
+            // Fallback: string comparison for exactly 78 digits
             $maxUint256 = '115792089237316195423570985008687907853269984665640564039457584007913129639935';
             if (strcmp($value, $maxUint256) > 0) {
                 return false;
@@ -122,6 +150,70 @@ class Validator
         }
         
         return true;
+    }
+
+    /**
+     * Safely add two uint256 strings with overflow protection.
+     *
+     * @param string $a First value
+     * @param string $b Second value
+     * @return string Sum as string
+     * @throws ValidationException If result overflows uint256
+     */
+    public static function safeAddUint256(string $a, string $b): string
+    {
+        if (!function_exists('bcadd')) {
+            throw new \RuntimeException('bcmath extension required for safe uint256 operations');
+        }
+
+        if (!self::isValidUintString($a)) {
+            throw new ValidationException("First operand is not a valid uint256 string: $a");
+        }
+
+        if (!self::isValidUintString($b)) {
+            throw new ValidationException("Second operand is not a valid uint256 string: $b");
+        }
+
+        $result = bcadd($a, $b, 0);
+        
+        $uint256Max = '115792089237316195423570985008687907853269984665640564039457584007913129639935';
+        if (bccomp($result, $uint256Max, 0) > 0) {
+            throw new ValidationException('Amount overflow: result exceeds uint256 max');
+        }
+
+        return $result;
+    }
+
+    /**
+     * Safely multiply two uint256 strings with overflow protection.
+     *
+     * @param string $a First value
+     * @param string $b Second value
+     * @return string Product as string
+     * @throws ValidationException If result overflows uint256
+     */
+    public static function safeMulUint256(string $a, string $b): string
+    {
+        if (!function_exists('bcmul')) {
+            throw new \RuntimeException('bcmath extension required for safe uint256 operations');
+        }
+
+        if (!self::isValidUintString($a)) {
+            throw new ValidationException("First operand is not a valid uint256 string: $a");
+        }
+
+        if (!self::isValidUintString($b)) {
+            throw new ValidationException("Second operand is not a valid uint256 string: $b");
+        }
+
+        $result = bcmul($a, $b, 0);
+        
+        $uint256Max = '115792089237316195423570985008687907853269984665640564039457584007913129639935';
+        if (bccomp($result, $uint256Max, 0) > 0) {
+            throw new ValidationException('Amount overflow: result exceeds uint256 max');
+        }
+
+        return $result;
     }
     
     /**

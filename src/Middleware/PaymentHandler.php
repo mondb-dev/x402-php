@@ -43,6 +43,7 @@ class PaymentHandler
      * @param FacilitatorClient|null $facilitator Optional facilitator client for verification/settlement
      * @param bool $autoSettle Whether to automatically settle payments (default: true)
      * @param int $validBeforeBufferSeconds Buffer time in seconds to account for block confirmation delays (default: 6)
+     * @param int $clockDriftToleranceSeconds Allow for clock drift between client and server (default: 30)
      * @param NonceTrackerInterface|null $nonceTracker Optional nonce tracker for replay attack prevention
      * @param RateLimiterInterface|null $rateLimiter Optional rate limiter to prevent DoS attacks
      * @param ComplianceCheckInterface|null $complianceCheck Optional AML/KYC compliance checker
@@ -53,6 +54,7 @@ class PaymentHandler
         private readonly ?FacilitatorClient $facilitator = null,
         private readonly bool $autoSettle = true,
         private readonly int $validBeforeBufferSeconds = self::DEFAULT_BUFFER_SECONDS,
+        private readonly int $clockDriftToleranceSeconds = 30,
         private readonly ?NonceTrackerInterface $nonceTracker = null,
         private readonly ?RateLimiterInterface $rateLimiter = null,
         private readonly ?ComplianceCheckInterface $complianceCheck = null,
@@ -65,6 +67,14 @@ class PaymentHandler
         }
         if ($validBeforeBufferSeconds > 300) {
             throw new \InvalidArgumentException('validBeforeBufferSeconds cannot exceed 300 seconds (5 minutes)');
+        }
+
+        // Validate clock drift tolerance
+        if ($clockDriftToleranceSeconds < 0) {
+            throw new \InvalidArgumentException('clockDriftToleranceSeconds cannot be negative');
+        }
+        if ($clockDriftToleranceSeconds > 300) {
+            throw new \InvalidArgumentException('clockDriftToleranceSeconds cannot exceed 300 seconds (5 minutes)');
         }
         
         // SECURITY: Enforce facilitator requirement in production
@@ -148,6 +158,35 @@ class PaymentHandler
                 throw new ValidationException(
                     "For exact scheme on EVM networks, extra must contain 'name' and 'version' fields for EIP-712 signature verification"
                 );
+            }
+
+            // Validate EIP-712 domain parameters against known tokens
+            \X402\Validation\TokenValidator::validateEIP712Domain($network, $asset, $extra);
+        }
+
+        // Validate scheme and network support with facilitator if available
+        if ($this->facilitator !== null) {
+            try {
+                $supported = $this->facilitator->getSupported();
+                
+                // Validate scheme is supported by facilitator
+                if (!$supported->supportsScheme($scheme)) {
+                    throw new ValidationException(
+                        "Facilitator does not support scheme: $scheme. Supported: " . 
+                        implode(', ', array_column($supported->schemes, 'name'))
+                    );
+                }
+                
+                // Validate network is supported by facilitator
+                if (!$supported->supportsNetwork($network)) {
+                    throw new ValidationException("Facilitator does not support network: $network");
+                }
+            } catch (FacilitatorException $e) {
+                // Log but don't fail - facilitator might be temporarily unavailable
+                $logger = $this->logger ?? new \Psr\Log\NullLogger();
+                $logger->warning('Failed to validate against facilitator capabilities', [
+                    'error' => $e->getMessage()
+                ]);
             }
         }
 
@@ -380,12 +419,21 @@ class PaymentHandler
                 // Pass the original base64 encoded header to facilitator
                 $verifyResponse = $this->facilitator->verify($paymentHeader, $requirements);
             } catch (FacilitatorException $e) {
+                $logger->error('Facilitator verification failed', [
+                    'error' => $e->getMessage(),
+                    'network' => $requirements->network,
+                ]);
+                
                 $this->metrics?->incrementCounter('payment.verification.failure', [
                     'reason' => 'facilitator_error',
                     'network' => $requirements->network,
                 ]);
+                
+                // Sanitize error message to prevent information leakage
+                $sanitizedError = $this->sanitizeFacilitatorError($e);
+                
                 throw new PaymentRequiredException(
-                    'Payment verification failed: ' . $e->getMessage(),
+                    'Payment verification failed: ' . $sanitizedError,
                     ErrorCodes::FACILITATOR_ERROR,
                     0,
                     $e
@@ -452,7 +500,13 @@ class PaymentHandler
         try {
             $settleResponse = $this->facilitator->settle($paymentHeader, $requirements);
         } catch (FacilitatorException $e) {
-            throw new ValidationException('Payment settlement failed: ' . $e->getMessage(), previous: $e);
+            $logger = $this->logger ?? new \Psr\Log\NullLogger();
+            $logger->error('Facilitator settlement failed', ['error' => $e->getMessage()]);
+            
+            // Sanitize error message
+            $sanitizedError = $this->sanitizeFacilitatorError($e);
+            
+            throw new ValidationException('Payment settlement failed: ' . $sanitizedError, previous: $e);
         }
 
         if (!$settleResponse->success) {
@@ -604,8 +658,10 @@ class PaymentHandler
         $now = time();
 
         // Verify authorization is not yet valid (validAfter is in the past)
+        // Apply clock drift tolerance to allow for time differences between client and server
         $validAfter = (int)$authorization->validAfter;
-        if ($validAfter > $now) {
+        $effectiveNow = $now + $this->clockDriftToleranceSeconds;
+        if ($validAfter > $effectiveNow) {
             throw new PaymentRequiredException(
                 'Payment authorization not yet valid',
                 ErrorCodes::INVALID_EVM_VALID_AFTER
@@ -613,10 +669,21 @@ class PaymentHandler
         }
 
         // Verify authorization is not expired (validBefore is in the future, with configurable buffer for block confirmations)
+        // Apply clock drift tolerance in the other direction
         $validBefore = (int)$authorization->validBefore;
-        if ($validBefore < ($now + $this->validBeforeBufferSeconds)) {
+        $effectiveExpiry = $now - $this->clockDriftToleranceSeconds + $this->validBeforeBufferSeconds;
+        if ($validBefore < $effectiveExpiry) {
             throw new PaymentRequiredException(
                 'Payment authorization expired or expiring soon',
+                ErrorCodes::INVALID_EVM_VALID_BEFORE
+            );
+        }
+
+        // Check if validBefore is too far in the future (prevent DoS)
+        $maxFutureTime = $now + $this->validBeforeBufferSeconds + $this->clockDriftToleranceSeconds + 300; // +5 minutes max
+        if ($validBefore > $maxFutureTime) {
+            throw new PaymentRequiredException(
+                'Payment authorization validBefore is too far in future',
                 ErrorCodes::INVALID_EVM_VALID_BEFORE
             );
         }
@@ -701,5 +768,37 @@ class PaymentHandler
         }
 
         return $lenA <=> $lenB;
+    }
+
+    /**
+     * Sanitize facilitator error messages to prevent information leakage.
+     *
+     * Removes sensitive information like API keys, tokens, IP addresses.
+     *
+     * @param \Exception $e Original exception
+     * @return string Sanitized error message
+     */
+    private function sanitizeFacilitatorError(\Exception $e): string
+    {
+        $message = $e->getMessage();
+        
+        // Remove API keys and tokens
+        $message = preg_replace('/api[_-]?key[=:]\s*\S+/i', 'api_key=[REDACTED]', $message);
+        $message = preg_replace('/bearer\s+\S+/i', 'Bearer [REDACTED]', $message);
+        $message = preg_replace('/token[=:]\s*\S+/i', 'token=[REDACTED]', $message);
+        $message = preg_replace('/authorization:\s*\S+/i', 'Authorization: [REDACTED]', $message);
+        
+        // Remove IP addresses
+        $message = preg_replace('/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/', '[IP]', $message);
+        
+        // Remove URLs (except domains)
+        $message = preg_replace('/https?:\/\/[^\s]+/', '[URL]', $message);
+        
+        // Limit message length to prevent DoS via large error messages
+        if (strlen($message) > 256) {
+            $message = substr($message, 0, 256) . '...';
+        }
+        
+        return $message;
     }
 }
