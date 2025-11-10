@@ -1,5 +1,11 @@
 # x402-php
 
+[![Latest Version](https://img.shields.io/github/v/release/mondb-dev/x402-php?include_prereleases)](https://github.com/mondb-dev/x402-php/releases)
+[![PHP Version](https://img.shields.io/packagist/php-v/mondb-dev/x402-php)](https://packagist.org/packages/mondb-dev/x402-php)
+[![CI Status](https://img.shields.io/github/actions/workflow/status/mondb-dev/x402-php/ci.yml?branch=main)](https://github.com/mondb-dev/x402-php/actions)
+[![License](https://img.shields.io/github/license/mondb-dev/x402-php)](LICENSE)
+[![Downloads](https://img.shields.io/packagist/dt/mondb-dev/x402-php)](https://packagist.org/packages/mondb-dev/x402-php)
+
 PHP implementation of the [x402 payments protocol](https://github.com/coinbase/x402) - a modern, internet-native payment standard for digital commerce.
 
 ## Features
@@ -7,7 +13,6 @@ PHP implementation of the [x402 payments protocol](https://github.com/coinbase/x
 - ✅ **Full x402 Protocol Support**: Implements the complete x402 specification
 - ✅ **Enterprise Security**: Nonce tracking, rate limiting, compliance checks, audit logging
 - ✅ **Production Ready**: Comprehensive error handling and developer-friendly API
-- ✅ **Default Facilitator**: Pre-configured with PayAI facilitator (https://facilitator.payai.network)
 - ✅ **Replay Attack Prevention**: Built-in nonce tracking with Redis backend
 - ✅ **DoS Protection**: Configurable rate limiting to prevent abuse
 - ✅ **Compliance Ready**: Optional AML/KYC integration hooks
@@ -535,16 +540,104 @@ Apache-2.0 License - see LICENSE file for details
 - [x] Metrics and monitoring interfaces
 - [x] PSR-3 logging support
 - [x] Production readiness validator
-- [ ] Support for additional payment schemes
 - [ ] Built-in middleware for popular PHP frameworks (Laravel, Symfony)
 - [ ] WebSocket support for real-time payment notifications
-- [ ] Payment analytics and reporting dashboard
+
+
+## Versioning
+
+This project follows [Semantic Versioning 2.0.0](https://semver.org/):
+
+- **MAJOR** version for incompatible API changes
+- **MINOR** version for backwards-compatible new features
+- **PATCH** version for backwards-compatible bug fixes
+
+**Current Version:** See [VERSION](VERSION) file or [GitHub Releases](https://github.com/mondb-dev/x402-php/releases)
+
+### Version History
+
+See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
+
+### Release Schedule
+
+- **Patch releases**: As needed for critical bug fixes
+- **Minor releases**: Monthly or as new features are ready
+- **Major releases**: When breaking changes are necessary (we aim to minimize these)
+
+### Deprecation Policy
+
+- Deprecated features will be marked with `@deprecated` tags
+- Deprecated features will be maintained for at least one major version
+- Migration guides will be provided for all breaking changes
+- Security fixes may be backported to previous major versions
+
+## Contributing
+
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+
+### Quick Contribution Guide
+
+1. **Fork** the repository
+2. **Create** a feature branch (`git checkout -b feature/amazing-feature`)
+3. **Commit** your changes using [Conventional Commits](https://www.conventionalcommits.org/)
+4. **Push** to your branch (`git push origin feature/amazing-feature`)
+5. **Open** a Pull Request
+
+### Development Setup
+
+```bash
+# Clone your fork
+git clone https://github.com/YOUR_USERNAME/x402-php.git
+cd x402-php
+
+# Install dependencies
+composer install
+
+# Run tests
+./vendor/bin/phpunit
+
+# Check code style
+./vendor/bin/php-cs-fixer fix --dry-run
+
+# Run static analysis
+./vendor/bin/phpstan analyse --level=8
+```
+
+### Contribution Guidelines
+
+- Follow [PSR-12](https://www.php-fig.org/psr/psr-12/) coding standards
+- Write tests for new features
+- Update documentation
+- Use conventional commit messages
+- Ensure all CI checks pass
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for complete guidelines.
+
+### Code of Conduct
+
+Be respectful and inclusive. We're building the future of payments together! 🚀
+
+## AI-Assisted Development
+
+If you're using AI coding assistants (GitHub Copilot, Cursor, Claude, GPT, etc.) to work on this project, please read [AI_GUIDELINES.md](AI_GUIDELINES.md) first. This document ensures:
+
+- ✅ Strict x402 protocol compliance
+- ✅ Security best practices
+- ✅ Code quality standards
+- ✅ Common pitfalls avoidance
+
+**Key reminders for AI assistants:**
+- Only `exact` scheme is currently in the x402 specification
+- Always require facilitator for production deployments
+- EIP-712 `extra` field is mandatory for EVM networks
+- HTTP 402 headers must be set in correct order
 
 ## Support
 
 For issues and questions:
 - GitHub Issues: [github.com/mondb-dev/x402-php/issues](https://github.com/mondb-dev/x402-php/issues)
 - x402 Community: Join the x402 discussions
+- Security Issues: See [SECURITY.md](SECURITY.md) for responsible disclosure
 
 ---
 

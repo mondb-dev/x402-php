@@ -1,0 +1,95 @@
+name: Code Quality
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  phpstan:
+    name: PHPStan Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: json, redis, bcmath
+          tools: composer:v2
+      
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress
+      
+      - name: Run PHPStan
+        run: ./vendor/bin/phpstan analyse --level=8 --error-format=github
+
+  code-style:
+    name: Code Style Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer:v2
+      
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress
+      
+      - name: Check PHP code style
+        run: ./vendor/bin/php-cs-fixer fix --dry-run --diff --verbose
+
+  complexity:
+    name: Code Complexity Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+      
+      - name: Install PHPLOC
+        run: composer global require phploc/phploc
+      
+      - name: Run PHPLOC
+        run: |
+          ~/.composer/vendor/bin/phploc src/ --verbose
+      
+      - name: Check cyclomatic complexity
+        run: |
+          echo "Checking for high cyclomatic complexity..."
+          # Add complexity checks here if needed
+
+  dependency-check:
+    name: Dependency Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer:v2
+      
+      - name: Validate composer files
+        run: composer validate --strict
+      
+      - name: Check for security vulnerabilities
+        run: composer audit
+      
+      - name: Check outdated dependencies
+        run: composer outdated --direct --strict || true

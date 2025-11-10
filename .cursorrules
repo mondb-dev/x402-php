@@ -1,0 +1,76 @@
+# Cursor AI Rules for x402-php
+
+You are assisting with the x402-php project, a PHP implementation of the x402 payments protocol.
+
+## CRITICAL: Protocol Compliance
+
+1. **Only implement features from the official x402 specification**: https://github.com/coinbase/x402
+2. **Current x402 version**: v1
+3. **Only supported scheme**: `exact` (DO NOT implement `range`, `upto`, or other schemes - they don't exist in the spec)
+4. **Read AI_GUIDELINES.md** before making any code changes
+
+## Code Standards
+
+- Always use `declare(strict_types=1);`
+- Always use type hints for parameters and return types
+- Use readonly properties for immutable data
+- Use error codes from `ErrorCodes` class, never magic strings
+- Document all public methods with PHPDoc
+- Follow PSR-12 coding standards
+
+## Security Requirements
+
+- Facilitator is REQUIRED for production (never skip verification)
+- Always validate inputs using `Validator` class
+- Always track nonces to prevent replay attacks
+- Always implement rate limiting
+- Never expose facilitator error details to clients (sanitize errors)
+
+## x402 Protocol Requirements
+
+### HTTP 402 Headers (IMPORTANT!)
+```php
+// ✅ CORRECT order - headers BEFORE status code
+header('WWW-Authenticate: X-Payment');
+header('X-Payment-Accept: ' . $acceptHeader);
+http_response_code(402);
+
+// ❌ WRONG - PHP converts to 401!
+http_response_code(402);
+header('WWW-Authenticate: X-Payment');
+```
+
+### EIP-712 Extra Field (REQUIRED for EVM)
+```php
+// ✅ MUST include for exact scheme on EVM networks
+extra: [
+    'name' => 'USD Coin',
+    'version' => '2'
+]
+```
+
+### Network IDs (Use Official Names)
+- `base-mainnet`, `base-sepolia`
+- `ethereum-mainnet`, `ethereum-sepolia`
+- `solana-mainnet`, `solana-devnet`
+
+## Testing
+
+- Minimum 80% coverage for new code
+- Use Arrange-Act-Assert pattern
+- Mock external dependencies (facilitator, Redis)
+- Test all error paths
+
+## Before Suggesting Code
+
+Ask yourself:
+1. Is this feature in the official x402 specification?
+2. Does this maintain strict type safety?
+3. Is input properly validated?
+4. Are there appropriate error codes?
+5. Is this secure (facilitator required, nonces tracked)?
+6. Does this follow PSR-12?
+
+## Reference
+
+See AI_GUIDELINES.md for complete documentation.
